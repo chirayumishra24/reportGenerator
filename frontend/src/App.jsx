@@ -233,7 +233,7 @@ export default function App() {
 
   // ---------- ANALYSIS ----------
   const analysisData = useMemo(() => {
-    if (!showAnalysis) return null;
+
     const selected = analysisSheets.filter(s => sheets[s]);
     const sums = {};
     selected.forEach(s => sums[s] = 0);
@@ -271,7 +271,7 @@ export default function App() {
     rows.push(totalRow);
 
     return { sections: selected, rows, headers: ['Range', ...selected, 'students', 'per%'] };
-  }, [showAnalysis, analysisSheets, sheets]);
+  }, [analysisSheets, sheets]);
 
   // ---------- STUDENT REPORT ----------
   const openStudentReport = (row) => {
@@ -282,7 +282,7 @@ export default function App() {
   const exportExcel = async () => {
     setLoading(true);
     try {
-      // Build analysis sheet data
+      // Build cross-section analysis sheet data
       let analysisSheet = null;
       if (analysisData) {
         analysisSheet = {
@@ -291,10 +291,23 @@ export default function App() {
         };
       }
 
+      // Build per-sheet analysis data
+      const perSheetAnalysis = {};
+      for (const name of sheetNames) {
+        const sa = computeSheetAnalysis(sheets[name]);
+        if (sa) {
+          perSheetAnalysis[name] = {
+            rows: sa.rows,
+            totalStudents: sa.totalStudents,
+            targetCol: sa.targetCol,
+          };
+        }
+      }
+
       const res = await fetch(`${API}/export`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ sheetNames, sheets, analysisSheet })
+        body: JSON.stringify({ sheetNames, sheets, analysisSheet, perSheetAnalysis })
       });
 
       const blob = await res.blob();

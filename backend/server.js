@@ -44,16 +44,15 @@ app.post('/api/parse', upload.single('file'), handleParse);
 // POST /export — receives modified data and returns xlsx
 const handleExport = (req, res) => {
   try {
-    const { sheetNames, sheets, analysisSheet } = req.body;
+    const { sheetNames, sheets, analysisSheet, perSheetAnalysis } = req.body;
 
     const wb = XLSX.utils.book_new();
 
-    // Write each sheet
+    // Write each data sheet
     for (const name of sheetNames) {
       const sheetData = sheets[name];
       if (!sheetData || !sheetData.rows) continue;
       const ws = XLSX.utils.json_to_sheet(sheetData.rows);
-      // Set column widths
       if (sheetData.headers) {
         ws['!cols'] = sheetData.headers.map(h => ({
           wch: Math.max(h.length + 2, 12)
@@ -62,17 +61,50 @@ const handleExport = (req, res) => {
       XLSX.utils.book_append_sheet(wb, ws, name);
     }
 
-    // Add analysis sheet if provided
+    // Add cross-section analysis sheet
     if (analysisSheet) {
       const aoa = [];
-      aoa.push(['ANALYSIS OF TARGETS SECTION WISE']);
+      aoa.push(['ANALYSIS OF TARGETS — SECTION WISE']);
+      aoa.push([]);
       aoa.push(analysisSheet.headers);
       for (const row of analysisSheet.rows) {
         aoa.push(analysisSheet.headers.map(h => row[h] !== undefined ? row[h] : ''));
       }
+      aoa.push([]);
+      aoa.push(['Generated on: ' + new Date().toLocaleDateString('en-IN', { 
+        year: 'numeric', month: 'long', day: 'numeric', hour: '2-digit', minute: '2-digit' 
+      })]);
       const ws = XLSX.utils.aoa_to_sheet(aoa);
-      ws['!cols'] = analysisSheet.headers.map((_, i) => ({ wch: i === 0 ? 14 : 12 }));
-      XLSX.utils.book_append_sheet(wb, ws, 'GENERATED ANALYSIS');
+      ws['!cols'] = analysisSheet.headers.map((_, i) => ({ wch: i === 0 ? 16 : 14 }));
+      // Merge the title row across all columns
+      ws['!merges'] = [{ s: { r: 0, c: 0 }, e: { r: 0, c: analysisSheet.headers.length - 1 } }];
+      XLSX.utils.book_append_sheet(wb, ws, 'SECTION ANALYSIS');
+    }
+
+    // Add per-sheet analysis sheets
+    if (perSheetAnalysis) {
+      for (const name of sheetNames) {
+        const sa = perSheetAnalysis[name];
+        if (!sa || !sa.rows) continue;
+
+        const aoa = [];
+        aoa.push([`SCORE DISTRIBUTION — ${name}`]);
+        aoa.push([]);
+        aoa.push(['Score Range', 'No. of Students']);
+        for (const row of sa.rows) {
+          aoa.push([row.Range, row.Count]);
+        }
+        aoa.push([]);
+        aoa.push([`Total Students: ${sa.totalStudents}`]);
+        aoa.push([`Target Column: ${sa.targetCol}`]);
+
+        // Trim sheet name to fit Excel's 31 char limit
+        const analysisName = `${name} Analysis`.substring(0, 31);
+        const ws = XLSX.utils.aoa_to_sheet(aoa);
+        ws['!cols'] = [{ wch: 16 }, { wch: 16 }];
+        ws['!merges'] = [{ s: { r: 0, c: 0 }, e: { r: 0, c: 1 } }];
+        XLSX.utils.book_append_sheet(wb, ws, analysisName);
+      }
     }
 
     const buf = XLSX.write(wb, { type: 'buffer', bookType: 'xlsx' });
