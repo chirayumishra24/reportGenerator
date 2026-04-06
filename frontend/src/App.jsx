@@ -9,7 +9,9 @@ import {
 } from 'lucide-react';
 import './index.css';
 
-const API = 'http://localhost:5000';
+const API = import.meta.env.PROD 
+  ? '/api' 
+  : 'http://localhost:5000/api';
 
 const RANGES = [
   { label: '95-100', min: 95, max: 100, color: '#22c55e' },

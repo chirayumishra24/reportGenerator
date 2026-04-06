@@ -9,17 +9,15 @@ const app = express();
 app.use(cors());
 app.use(express.json({ limit: '50mb' }));
 
-const upload = multer({ dest: path.join(__dirname, 'uploads') });
+const upload = multer({ storage: multer.memoryStorage() });
 
-if (!fs.existsSync(path.join(__dirname, 'uploads'))) {
-  fs.mkdirSync(path.join(__dirname, 'uploads'));
-}
-
-// POST /parse — reads entire workbook and returns all sheets as JSON
-app.post('/parse', upload.single('file'), (req, res) => {
+// POST /parse — reads workbook from memory buffer and returns JSON
+app.post('/api/parse', upload.single('file'), (req, res) => {
   try {
-    const wb = XLSX.readFile(req.file.path);
-    fs.unlinkSync(req.file.path);
+    if (!req.file) {
+      return res.status(400).json({ error: 'No file uploaded' });
+    }
+    const wb = XLSX.read(req.file.buffer, { type: 'buffer' });
 
     const result = {};
     for (const name of wb.SheetNames) {
@@ -37,7 +35,7 @@ app.post('/parse', upload.single('file'), (req, res) => {
 });
 
 // POST /export — receives modified data and returns xlsx
-app.post('/export', (req, res) => {
+app.post('/api/export', (req, res) => {
   try {
     const { sheetNames, sheets, analysisSheet } = req.body;
 
@@ -80,7 +78,13 @@ app.post('/export', (req, res) => {
   }
 });
 
-const PORT = 5000;
-app.listen(PORT, () => {
-  console.log(`Backend running on http://localhost:${PORT}`);
-});
+// For local development
+if (process.env.NODE_ENV !== 'production') {
+  const PORT = process.env.PORT || 5000;
+  app.listen(PORT, () => {
+    console.log(`Backend running on http://localhost:${PORT}`);
+  });
+}
+
+// Export the app for Vercel Serverless
+module.exports = app;
