@@ -9,10 +9,15 @@ const app = express();
 app.use(cors());
 app.use(express.json({ limit: '50mb' }));
 
+// Healthcheck
+const healthCheck = (req, res) => res.status(200).json({ ok: true, message: 'Backend is running on Vercel!' });
+app.get('/health', healthCheck);
+app.get('/api/health', healthCheck);
+
 const upload = multer({ storage: multer.memoryStorage() });
 
 // POST /parse — reads workbook from memory buffer and returns JSON
-app.post('/api/parse', upload.single('file'), (req, res) => {
+const handleParse = (req, res) => {
   try {
     if (!req.file) {
       return res.status(400).json({ error: 'No file uploaded' });
@@ -32,10 +37,12 @@ app.post('/api/parse', upload.single('file'), (req, res) => {
     console.error('Parse error:', err);
     res.status(500).json({ error: err.message });
   }
-});
+};
+app.post('/parse', upload.single('file'), handleParse);
+app.post('/api/parse', upload.single('file'), handleParse);
 
 // POST /export — receives modified data and returns xlsx
-app.post('/api/export', (req, res) => {
+const handleExport = (req, res) => {
   try {
     const { sheetNames, sheets, analysisSheet } = req.body;
 
@@ -76,7 +83,9 @@ app.post('/api/export', (req, res) => {
     console.error('Export error:', err);
     res.status(500).json({ error: err.message });
   }
-});
+};
+app.post('/export', handleExport);
+app.post('/api/export', handleExport);
 
 // For local development
 if (process.env.NODE_ENV !== 'production') {
