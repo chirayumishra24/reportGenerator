@@ -1,12 +1,15 @@
-import React, { useState, useRef, useMemo } from 'react';
+import React, { useState, useRef, useMemo, useCallback } from 'react';
 import {
   BarChart, Bar, LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip, Legend, ResponsiveContainer,
-  PieChart, Pie, Cell
+  PieChart, Pie, Cell, RadarChart, Radar, PolarGrid, PolarAngleAxis, PolarRadiusAxis
 } from 'recharts';
 import {
   Upload, FileSpreadsheet, CheckCircle, Download, BarChart3, ArrowLeft, X,
-  Loader2, Info, Plus, Trash2, UserCheck, FileDown, RotateCcw, Eye, Edit3, Save
+  Loader2, Info, Plus, Trash2, UserCheck, FileDown, RotateCcw, Eye, Edit3, Save,
+  Printer, Search, TrendingUp, TrendingDown, Award, Users
 } from 'lucide-react';
+import html2canvas from 'html2canvas';
+import { jsPDF } from 'jspdf';
 import './index.css';
 
 const API = import.meta.env.PROD 
@@ -44,6 +47,58 @@ function getScoreColor(val) {
   return 'score-poor';
 }
 
+// Check if a subject value means "not opted" (dash, empty, etc.)
+function isNotOpted(val) {
+  if (val === null || val === undefined || val === '') return true;
+  const s = String(val).trim();
+  return s === '-' || s === '—' || s === '–' || s === 'N/A' || s === 'NA' || s === '';
+}
+
+// Determine which columns are "subject" columns (not metadata, not totals, not %)
+function getSubjectColumns(headers) {
+  return headers.filter(h => {
+    const lowerH = h.toLowerCase();
+    return !lowerH.includes('s.no') && !lowerH.includes('sr.') &&
+      !lowerH.includes('name') && !lowerH.includes('%') &&
+      !lowerH.includes('admn') && !lowerH.includes('admin') &&
+      !lowerH.includes('roll') && !lowerH.includes('rank') &&
+      !lowerH.includes('dob') && !lowerH.includes('date') &&
+      !lowerH.includes('father') && !lowerH.includes('mother') &&
+      !lowerH.includes('gender') && !lowerH.includes('enrollment') &&
+      !lowerH.includes('grand total') && !lowerH.includes('total') &&
+      !lowerH.includes('column');
+  });
+}
+
+// Get max marks for a subject from the header (e.g. "English  80" -> 80)
+function getMaxMarksFromHeader(header) {
+  const match = header.match(/(\d+)\s*$/);
+  return match ? parseInt(match[1]) : null;
+}
+
+// Recalculate Grand Total excluding not-opted subjects (dash/empty)
+function recalcGrandTotal(row, headers) {
+  const subjectCols = getSubjectColumns(headers);
+  const totalCol = headers.find(h => h.toLowerCase().includes('grand total') || h.toLowerCase() === 'total');
+  if (!totalCol) return row;
+
+  let sum = 0;
+  let hasAny = false;
+  subjectCols.forEach(h => {
+    const val = row[h];
+    if (!isNotOpted(val)) {
+      const sv = parseFloat(val);
+      if (!isNaN(sv)) {
+        sum += sv;
+        hasAny = true;
+      }
+    }
+  });
+
+  row[totalCol] = hasAny ? sum : '';
+  return row;
+}
+
 // Compute analysis for a single sheet
 function computeSheetAnalysis(sheet) {
   if (!sheet || !sheet.rows || sheet.rows.length === 0) return null;
@@ -62,7 +117,6 @@ function computeSheetAnalysis(sheet) {
     totalStudents += count;
   }
 
-  // Add total row
   rows.push({ Range: 'Total', Count: totalStudents, color: '#1e293b' });
   return { rows, totalStudents, targetCol };
 }
@@ -80,6 +134,7 @@ export default function App() {
   const [editingCell, setEditingCell] = useState(null);
   const [editValue, setEditValue] = useState('');
   const [showCreateModal, setShowCreateModal] = useState(false);
+  const [searchQuery, setSearchQuery] = useState('');
   const fileRef = useRef(null);
 
   // ---------- UPLOAD ----------
@@ -97,20 +152,19 @@ export default function App() {
       const res = await fetch(`${API}/parse`, { method: 'POST', body: formData });
       const data = await res.json();
       if (data.sheetNames) {
-        // Smart filter: remove summary/analysis rows from the imported sheets
         const cleanedSheets = {};
         for (const [sName, sData] of Object.entries(data.sheets)) {
           const validRows = [];
           for (const r of sData.rows) {
             const values = Object.values(r).map(v => String(v).trim().toLowerCase());
-            // Filter out rows that are actually embedded analysis tables
             const isSummary = values.some(v => 
               v === '95-100' || v === '90-94' || v === '80-89' || 
               v === '60-79' || v === '50-59' || v === 'below 50'
             );
-            // Also filter out completely empty rows
             const isEmpty = values.every(v => v === '' || v === 'null' || v === 'undefined');
             if (!isSummary && !isEmpty) {
+              // Recalculate Grand Total excluding not-opted subjects
+              recalcGrandTotal(r, sData.headers);
               validRows.push(r);
             }
           }
@@ -140,31 +194,14 @@ export default function App() {
     const { sheetName, rowIdx, col } = editingCell;
     const updated = { ...sheets };
     const val = editValue;
-    // Try to parse as number
     const num = parseFloat(val);
     const finalVal = isNaN(num) || val === '' ? val : num;
     updated[sheetName].rows[rowIdx][col] = finalVal;
 
-    // Auto-calculate Grand Total if needed
+    // Recalculate Grand Total excluding not-opted subjects
     const row = updated[sheetName].rows[rowIdx];
     const headers = updated[sheetName].headers;
-    const totalCol = headers.find(h => h.toLowerCase().includes('grand total') || h.toLowerCase() === 'total');
-    
-    if (totalCol && col !== totalCol) {
-      let sum = 0;
-      // Sum all numeric columns that are NOT S.No, Name, Grand Total, or % columns
-      headers.forEach(h => {
-        const lowerH = h.toLowerCase();
-        if (h !== totalCol && !lowerH.includes('s.no') && !lowerH.includes('sr.') && 
-            !lowerH.includes('name') && !lowerH.includes('%') &&
-            !lowerH.includes('admn') && !lowerH.includes('admin') &&
-            !lowerH.includes('roll') && !lowerH.includes('rank')) {
-          const sv = parseFloat(row[h]);
-          if (!isNaN(sv)) sum += sv;
-        }
-      });
-      row[totalCol] = sum;
-    }
+    recalcGrandTotal(row, headers);
 
     setSheets(updated);
     setEditingCell(null);
@@ -204,7 +241,6 @@ export default function App() {
     const headers = updated[activeSheet].headers;
     const newRow = {};
     headers.forEach(h => { newRow[h] = ''; });
-    // Auto-fill S.No
     const snCol = headers.find(h => h.toLowerCase().includes('s.no') || h.toLowerCase() === 'sr. no.');
     if (snCol) newRow[snCol] = updated[activeSheet].rows.length + 1;
     updated[activeSheet].rows.push(newRow);
@@ -233,7 +269,6 @@ export default function App() {
 
   // ---------- ANALYSIS ----------
   const analysisData = useMemo(() => {
-
     const selected = analysisSheets.filter(s => sheets[s]);
     const sums = {};
     selected.forEach(s => sums[s] = 0);
@@ -273,42 +308,56 @@ export default function App() {
     return { sections: selected, rows, headers: ['Range', ...selected, 'students', 'per%'] };
   }, [analysisSheets, sheets]);
 
+  // Subject-wise section comparison data
+  const subjectComparison = useMemo(() => {
+    const selected = analysisSheets.filter(s => sheets[s]);
+    if (selected.length === 0) return null;
+
+    const firstSheet = sheets[selected[0]];
+    if (!firstSheet) return null;
+    const subjectCols = getSubjectColumns(firstSheet.headers);
+    if (subjectCols.length === 0) return null;
+
+    const data = subjectCols.map(subject => {
+      const entry = { subject: subject.replace(/\s*\+\s*30/g, '').replace(/\s+\d+$/, '').trim() };
+      for (const sn of selected) {
+        const sheet = sheets[sn];
+        let sum = 0, count = 0;
+        for (const student of sheet.rows) {
+          const val = student[subject];
+          // Skip not-opted subjects
+          if (isNotOpted(val)) continue;
+          const v = parseFloat(val);
+          if (!isNaN(v)) { sum += v; count++; }
+        }
+        entry[sn] = count > 0 ? parseFloat((sum / count).toFixed(1)) : 0;
+      }
+      return entry;
+    });
+
+    return { data, sections: selected, subjects: subjectCols };
+  }, [analysisSheets, sheets]);
+
   // ---------- STUDENT REPORT ----------
   const openStudentReport = (row) => {
     setStudentReport(row);
   };
 
-  // ---------- EXPORT ----------
+  // ---------- EXPORT EXCEL ----------
+  // Charts are generated automatically on the server — no need to capture from UI
   const exportExcel = async () => {
     setLoading(true);
     try {
-      // Build cross-section analysis sheet data
-      let analysisSheet = null;
-      if (analysisData) {
-        analysisSheet = {
-          headers: analysisData.headers,
-          rows: analysisData.rows,
-        };
-      }
-
-      // Build per-sheet analysis data
-      const perSheetAnalysis = {};
-      for (const name of sheetNames) {
-        const sa = computeSheetAnalysis(sheets[name]);
-        if (sa) {
-          perSheetAnalysis[name] = {
-            rows: sa.rows,
-            totalStudents: sa.totalStudents,
-            targetCol: sa.targetCol,
-          };
-        }
-      }
-
       const res = await fetch(`${API}/export`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ sheetNames, sheets, analysisSheet, perSheetAnalysis })
+        body: JSON.stringify({ sheetNames, sheets })
       });
+
+      if (!res.ok) {
+        const errData = await res.json().catch(() => ({}));
+        throw new Error(errData.error || 'Export failed');
+      }
 
       const blob = await res.blob();
       const url = URL.createObjectURL(blob);
@@ -316,8 +365,10 @@ export default function App() {
       a.href = url;
       a.download = `Report_${fileName}`;
       a.click();
-    } catch {
-      alert('Export failed.');
+      URL.revokeObjectURL(url);
+    } catch (err) {
+      console.error('Export error:', err);
+      alert('Export failed: ' + err.message);
     }
     setLoading(false);
   };
@@ -335,6 +386,51 @@ export default function App() {
 
   const currentSheet = sheets[activeSheet];
   const totalStudents = currentSheet ? currentSheet.rows.length : 0;
+
+  // ---------- SEARCH & FILTER ----------
+  const filteredRows = useMemo(() => {
+    if (!currentSheet) return [];
+    if (!searchQuery.trim()) return currentSheet.rows;
+    const q = searchQuery.toLowerCase();
+    const nameCol = currentSheet.headers.find(h => h.toLowerCase().includes('name') && !h.toLowerCase().includes('father') && !h.toLowerCase().includes('mother'));
+    return currentSheet.rows.filter(row => {
+      if (nameCol && String(row[nameCol] || '').toLowerCase().includes(q)) return true;
+      return Object.values(row).some(v => String(v).toLowerCase().includes(q));
+    });
+  }, [currentSheet, searchQuery]);
+
+  // ---------- CLASS STATS ----------
+  const classStats = useMemo(() => {
+    if (!currentSheet || currentSheet.rows.length === 0) return null;
+    const totalCol = currentSheet.headers.find(h => h.toLowerCase().includes('grand total') || h.toLowerCase() === 'total');
+    const nameCol = currentSheet.headers.find(h => h.toLowerCase().includes('name') && !h.toLowerCase().includes('father') && !h.toLowerCase().includes('mother'));
+    if (!totalCol) return null;
+
+    const scored = currentSheet.rows.filter(r => !isNaN(parseFloat(r[totalCol])) && parseFloat(r[totalCol]) > 0);
+    if (scored.length === 0) return null;
+
+    const scores = scored.map(r => parseFloat(r[totalCol]));
+    const avg = scores.reduce((a, b) => a + b, 0) / scores.length;
+    const maxScore = Math.max(...scores);
+    const minScore = Math.min(...scores);
+    const topStudent = scored.find(r => parseFloat(r[totalCol]) === maxScore);
+    const bottomStudent = scored.find(r => parseFloat(r[totalCol]) === minScore);
+
+    // Rank students by total (descending)
+    const ranked = [...scored].sort((a, b) => parseFloat(b[totalCol]) - parseFloat(a[totalCol]));
+    const rankMap = new Map();
+    ranked.forEach((r, i) => rankMap.set(r, i + 1));
+
+    return {
+      avg: avg.toFixed(1),
+      topName: nameCol ? (topStudent?.[nameCol] || '—') : '—',
+      topScore: maxScore,
+      bottomName: nameCol ? (bottomStudent?.[nameCol] || '—') : '—',
+      bottomScore: minScore,
+      totalScored: scored.length,
+      rankMap,
+    };
+  }, [currentSheet]);
 
   // ========== RENDER ==========
   return (
@@ -363,7 +459,6 @@ export default function App() {
               <Plus size={20} /> Create New Template
             </button>
           </div>
-
           <div className="info-bar"><Info size={16} /><span>Your data stays local — processed on your machine only.</span></div>
         </div>
       )}
@@ -379,7 +474,6 @@ export default function App() {
       {/* ===== DASHBOARD ===== */}
       {screen === 'dashboard' && (
         <div className="main-card fade-in dashboard-card">
-          {/* Header */}
           <div className="dash-header">
             <div className="dash-header-left">
               <FileSpreadsheet size={28} className="header-icon" />
@@ -390,7 +484,6 @@ export default function App() {
             </div>
           </div>
 
-          {/* Info Bar */}
           <div className="file-info-bar">
             <div className="info-chip"><strong>File:</strong> {fileName}</div>
             <div className="info-chip"><strong>Sheets:</strong> {sheetNames.length}</div>
@@ -398,7 +491,6 @@ export default function App() {
             <div className="info-chip highlight"><strong>Students:</strong> {totalStudents}</div>
           </div>
 
-          {/* Toolbar */}
           <div className="toolbar">
             <button className="tool-btn primary" onClick={addStudent}><Plus size={16} /> Add Student</button>
             <button className="tool-btn success" onClick={() => { setShowAnalysis(true); }}><BarChart3 size={16} /> Class Analysis</button>
@@ -407,9 +499,35 @@ export default function App() {
             </button>
             <button className="tool-btn outline" onClick={addSheet}><Plus size={16} /> New Sheet</button>
             <button className="tool-btn danger-outline" onClick={resetAll}><RotateCcw size={16} /> Reset All</button>
+            <div className="search-box">
+              <Search size={15} className="search-icon" />
+              <input className="search-input" placeholder="Search students..." value={searchQuery} onChange={e => setSearchQuery(e.target.value)} />
+              {searchQuery && <button className="search-clear" onClick={() => setSearchQuery('')}><X size={14} /></button>}
+            </div>
           </div>
 
-          {/* Sheet Tabs */}
+          {/* Quick Stats Bar */}
+          {classStats && (
+            <div className="stats-bar fade-in">
+              <div className="stat-card">
+                <div className="stat-icon"><Users size={18} /></div>
+                <div><span className="stat-label">Class Average</span><span className="stat-value">{classStats.avg}</span></div>
+              </div>
+              <div className="stat-card stat-top">
+                <div className="stat-icon"><TrendingUp size={18} /></div>
+                <div><span className="stat-label">Top Scorer</span><span className="stat-value">{classStats.topName} <small>({classStats.topScore})</small></span></div>
+              </div>
+              <div className="stat-card stat-bottom">
+                <div className="stat-icon"><TrendingDown size={18} /></div>
+                <div><span className="stat-label">Needs Attention</span><span className="stat-value">{classStats.bottomName} <small>({classStats.bottomScore})</small></span></div>
+              </div>
+              <div className="stat-card">
+                <div className="stat-icon"><Award size={18} /></div>
+                <div><span className="stat-label">Scored Students</span><span className="stat-value">{classStats.totalScored} / {totalStudents}</span></div>
+              </div>
+            </div>
+          )}
+
           <div className="sheet-tabs">
             {sheetNames.map(name => (
               <button key={name} className={`sheet-tab ${activeSheet === name ? 'active' : ''}`} onClick={() => { setActiveSheet(name); setShowAnalysis(false); }}>
@@ -418,10 +536,10 @@ export default function App() {
             ))}
           </div>
 
-          {/* Data Table or Analysis */}
           {showAnalysis ? (
             <AnalysisPanel
               data={analysisData}
+              subjectComparison={subjectComparison}
               sheets={sheetNames}
               selected={analysisSheets}
               setSelected={setAnalysisSheets}
@@ -434,22 +552,39 @@ export default function App() {
                   <thead>
                     <tr>
                       <th className="row-num">#</th>
+                      {classStats && <th className="rank-col">Rank</th>}
                       {currentSheet.headers.map(h => <th key={h}>{h}</th>)}
                       <th className="actions-col">Actions</th>
                     </tr>
                   </thead>
                   <tbody>
-                    {currentSheet.rows.length === 0 ? (
-                      <tr><td colSpan={currentSheet.headers.length + 2} className="empty-msg">No students added yet. Click "Add Student" to begin.</td></tr>
-                    ) : currentSheet.rows.map((row, ri) => (
+                    {filteredRows.length === 0 ? (
+                      <tr><td colSpan={currentSheet.headers.length + (classStats ? 3 : 2)} className="empty-msg">
+                        {searchQuery ? `No students matching "${searchQuery}"` : 'No students added yet. Click "Add Student" to begin.'}
+                      </td></tr>
+                    ) : filteredRows.map((row, fi) => {
+                      const ri = currentSheet.rows.indexOf(row);
+                      const rank = classStats?.rankMap?.get(row);
+                      return (
                       <tr key={ri}>
                         <td className="row-num">{ri + 1}</td>
+                        {classStats && (
+                          <td className="rank-col">
+                            {rank ? (
+                              <span className={`rank-badge ${rank <= 3 ? 'rank-top' : rank <= 10 ? 'rank-mid' : ''}`}>
+                                {rank <= 3 ? ['🥇','🥈','🥉'][rank-1] : `#${rank}`}
+                              </span>
+                            ) : '—'}
+                          </td>
+                        )}
                         {currentSheet.headers.map(h => {
                           const isEditing = editingCell && editingCell.sheetName === activeSheet && editingCell.rowIdx === ri && editingCell.col === h;
                           const val = row[h];
+                          const isSubjectCol = getSubjectColumns(currentSheet.headers).includes(h);
+                          const notOpted = isSubjectCol && isNotOpted(val);
                           const scoreClass = (h.toLowerCase().includes('%') || h.toLowerCase().includes('total')) ? getScoreColor(val) : '';
                           return (
-                            <td key={h} className={`data-cell ${scoreClass}`} onDoubleClick={() => startEdit(activeSheet, ri, h)}>
+                            <td key={h} className={`data-cell ${scoreClass} ${notOpted ? 'not-opted-cell' : ''}`} onDoubleClick={() => startEdit(activeSheet, ri, h)}>
                               {isEditing ? (
                                 <input
                                   className="cell-input"
@@ -460,7 +595,7 @@ export default function App() {
                                   autoFocus
                                 />
                               ) : (
-                                <span>{val !== '' && val !== null && val !== undefined ? String(val) : '—'}</span>
+                                <span>{notOpted ? '—' : (val !== '' && val !== null && val !== undefined ? String(val) : '—')}</span>
                               )}
                             </td>
                           );
@@ -474,37 +609,49 @@ export default function App() {
                           </button>
                         </td>
                       </tr>
-                    ))}
+                    );})}
+                    {searchQuery && filteredRows.length > 0 && (
+                      <tr><td colSpan={currentSheet.headers.length + (classStats ? 3 : 2)} className="search-info">Showing {filteredRows.length} of {currentSheet.rows.length} students</td></tr>
+                    )}
                   </tbody>
                 </table>
               </div>
-
-              {/* Per-Sheet Analysis */}
               <SheetAnalysis sheetName={activeSheet} sheet={currentSheet} />
             </>
           ) : null}
 
           <div className="footer-info">
-            Target Analysis Report Generator — Double-click any cell to edit • Data auto-saved in session
+            Target Analysis Report Generator — Double-click any cell to edit • Subjects marked with "-" are excluded from totals & graphs
           </div>
         </div>
       )}
 
       {/* ===== STUDENT REPORT MODAL ===== */}
       {studentReport && (
-        <StudentReportModal student={studentReport} headers={currentSheet?.headers || []} onClose={() => setStudentReport(null)} />
+        <StudentReportModal 
+          student={studentReport} 
+          headers={currentSheet?.headers || []} 
+          sheetName={activeSheet} 
+          onClose={() => setStudentReport(null)} 
+        />
       )}
     </div>
   );
 }
 
 // ========== ANALYSIS PANEL ==========
-function AnalysisPanel({ data, sheets, selected, setSelected, onClose }) {
+function AnalysisPanel({ data, subjectComparison, sheets, selected, setSelected, onClose }) {
   const toggleSheet = (name) => {
     setSelected(prev => prev.includes(name) ? prev.filter(s => s !== name) : [...prev, name]);
   };
 
   if (!data) return null;
+
+  const pieData = data.rows.slice(0, -1).map(r => ({
+    name: r.Range,
+    value: r.students,
+  }));
+  const PIE_COLORS = ['#22c55e', '#3b82f6', '#8b5cf6', '#f59e0b', '#f97316', '#ef4444'];
 
   return (
     <div className="analysis-panel fade-in">
@@ -513,7 +660,6 @@ function AnalysisPanel({ data, sheets, selected, setSelected, onClose }) {
         <button className="icon-btn" onClick={onClose}><X size={18} /></button>
       </div>
 
-      {/* Sheet selector */}
       <div className="analysis-sheets">
         <span className="label">Include sheets:</span>
         {sheets.map(s => (
@@ -523,17 +669,16 @@ function AnalysisPanel({ data, sheets, selected, setSelected, onClose }) {
         ))}
       </div>
 
-      {/* Charts Box */}
-      <div className="chart-box" style={{ padding: '2rem 1.5rem', background: '#fff' }}>
-        <h4 style={{ marginBottom: '1.5rem', color: 'var(--text)', borderBottom: '1px solid var(--border)', paddingBottom: '0.75rem' }}>
+      {/* Charts */}
+      <div className="chart-box" id="section-analysis-charts" style={{ padding: '2rem 1.5rem', background: '#fff' }}>
+        <h4 style={{ marginBottom: '1.5rem', color: 'var(--text)', borderBottom: '1px solid var(--border)', paddingBottom: '0.75rem', fontSize: '1rem' }}>
           {data.sections.map(s => s.replace(/^X\s*/, 'X-')).join(', ')} — Performance Visuals
         </h4>
         
-        <div style={{ display: 'grid', gridTemplateColumns: 'minmax(0, 1fr) minmax(0, 1fr)', gap: '2rem', height: '350px' }}>
-          {/* Bar Chart */}
-          <div>
-            <h5 style={{ textAlign: 'center', marginBottom: '1rem', color: 'var(--text-secondary)' }}>Bar Analysis</h5>
-            <ResponsiveContainer width="100%" height="85%">
+        <div style={{ display: 'grid', gridTemplateColumns: 'minmax(0, 1fr) minmax(0, 1fr)', gap: '2rem', marginBottom: '2rem' }}>
+          <div className="chart-inner-box">
+            <h5 className="chart-subtitle">Section-wise Bar Analysis</h5>
+            <ResponsiveContainer width="100%" height={300}>
               <BarChart data={data.rows.slice(0, -1)} margin={{ top: 10, right: 10, left: 0, bottom: 5 }}>
                 <CartesianGrid strokeDasharray="3 3" stroke="rgba(0,0,0,0.05)" />
                 <XAxis dataKey="Range" tick={{ fontSize: 11 }} />
@@ -547,10 +692,9 @@ function AnalysisPanel({ data, sheets, selected, setSelected, onClose }) {
             </ResponsiveContainer>
           </div>
 
-          {/* Line Chart */}
-          <div>
-            <h5 style={{ textAlign: 'center', marginBottom: '1rem', color: 'var(--text-secondary)' }}>Trend Line Analysis</h5>
-            <ResponsiveContainer width="100%" height="85%">
+          <div className="chart-inner-box">
+            <h5 className="chart-subtitle">Trend Line Analysis</h5>
+            <ResponsiveContainer width="100%" height={300}>
               <LineChart data={data.rows.slice(0, -1)} margin={{ top: 10, right: 10, left: 0, bottom: 5 }}>
                 <CartesianGrid strokeDasharray="3 3" stroke="rgba(0,0,0,0.05)" />
                 <XAxis dataKey="Range" tick={{ fontSize: 11 }} />
@@ -563,6 +707,48 @@ function AnalysisPanel({ data, sheets, selected, setSelected, onClose }) {
               </LineChart>
             </ResponsiveContainer>
           </div>
+        </div>
+
+        <div style={{ display: 'grid', gridTemplateColumns: 'minmax(0, 1fr) minmax(0, 1fr)', gap: '2rem' }}>
+          <div className="chart-inner-box">
+            <h5 className="chart-subtitle">Overall Distribution</h5>
+            <ResponsiveContainer width="100%" height={300}>
+              <PieChart>
+                <Pie
+                  data={pieData.filter(d => d.value > 0)}
+                  cx="50%" cy="50%"
+                  innerRadius={60} outerRadius={110}
+                  paddingAngle={3}
+                  dataKey="value"
+                  label={({ name, percent }) => `${name}: ${(percent * 100).toFixed(0)}%`}
+                >
+                  {pieData.map((entry, i) => (
+                    <Cell key={i} fill={PIE_COLORS[i % PIE_COLORS.length]} />
+                  ))}
+                </Pie>
+                <Tooltip />
+                <Legend />
+              </PieChart>
+            </ResponsiveContainer>
+          </div>
+
+          {subjectComparison && subjectComparison.data.length > 0 && (
+            <div className="chart-inner-box">
+              <h5 className="chart-subtitle">Subject-wise Average (Section Comparison)</h5>
+              <ResponsiveContainer width="100%" height={300}>
+                <BarChart data={subjectComparison.data} margin={{ top: 10, right: 10, left: 0, bottom: 5 }}>
+                  <CartesianGrid strokeDasharray="3 3" stroke="rgba(0,0,0,0.05)" />
+                  <XAxis dataKey="subject" tick={{ fontSize: 10 }} interval={0} angle={-25} textAnchor="end" height={60} />
+                  <YAxis tick={{ fontSize: 11 }} />
+                  <Tooltip contentStyle={{ borderRadius: 10, border: 'none', boxShadow: '0 4px 20px rgba(0,0,0,0.1)' }} />
+                  <Legend />
+                  {subjectComparison.sections.map((s, i) => (
+                    <Bar key={s} dataKey={s} fill={CHART_COLORS[i % CHART_COLORS.length]} radius={[4, 4, 0, 0]} />
+                  ))}
+                </BarChart>
+              </ResponsiveContainer>
+            </div>
+          )}
         </div>
       </div>
 
@@ -596,7 +782,8 @@ function SheetAnalysis({ sheetName, sheet }) {
   const analysis = useMemo(() => computeSheetAnalysis(sheet), [sheet]);
   if (!analysis) return null;
 
-  const chartData = analysis.rows.slice(0, -1); // exclude total row
+  const chartData = analysis.rows.slice(0, -1);
+  const chartId = `sheet-chart-${sheetName.replace(/\s+/g, '_')}`;
 
   return (
     <div className="sheet-analysis fade-in">
@@ -604,7 +791,6 @@ function SheetAnalysis({ sheetName, sheet }) {
         <BarChart3 size={18} /> {sheetName} — Score Distribution
       </h3>
       <div className="sheet-analysis-body">
-        {/* Table */}
         <div className="sheet-analysis-table">
           <table className="data-table analysis-tbl mini-tbl">
             <thead>
@@ -625,9 +811,7 @@ function SheetAnalysis({ sheetName, sheet }) {
             </tbody>
           </table>
         </div>
-
-        {/* Chart */}
-        <div className="sheet-analysis-chart">
+        <div className="sheet-analysis-chart" id={chartId}>
           <ResponsiveContainer width="100%" height={260}>
             <BarChart data={chartData} margin={{ top: 10, right: 10, left: 0, bottom: 5 }}>
               <CartesianGrid strokeDasharray="3 3" stroke="rgba(0,0,0,0.05)" />
@@ -649,112 +833,288 @@ function SheetAnalysis({ sheetName, sheet }) {
 }
 
 // ========== STUDENT REPORT MODAL ==========
-function StudentReportModal({ student, headers, onClose }) {
-  // Find numeric columns for the score breakdown
-  const scoreFields = headers.filter(h => {
-    const val = student[h];
-    return typeof val === 'number' && !h.toLowerCase().includes('s.no') && !h.toLowerCase().includes('sr.');
-  });
+function StudentReportModal({ student, headers, sheetName, onClose }) {
+  const [downloading, setDownloading] = useState(false);
+  const reportRef = useRef(null);
+
+  const subjectCols = getSubjectColumns(headers);
+
+  // Only opted subjects — exclude "-" / empty / not-opted
+  const optedSubjects = subjectCols.filter(h => !isNotOpted(student[h]));
+  
+  // Not-opted subjects
+  const notOptedSubjects = subjectCols.filter(h => isNotOpted(student[h]));
 
   const nameCol = headers.find(h => h.toLowerCase().includes('name') && !h.toLowerCase().includes('father') && !h.toLowerCase().includes('mother'));
   const name = nameCol ? student[nameCol] : 'Student';
 
-  const totalCol = headers.find(h => h.toLowerCase().includes('grand total') || h.toLowerCase().includes('total'));
+  const totalCol = headers.find(h => h.toLowerCase().includes('grand total') || h.toLowerCase() === 'total');
   const total = totalCol ? student[totalCol] : null;
 
   const percentCol = headers.find(h => h.toLowerCase().includes('% in ix+30') || h.toLowerCase().includes('% in ix'));
   const percent = percentCol ? student[percentCol] : null;
 
-  // Pie chart data for subject scores
-  const subjectCols = headers.filter(h => {
-    const lowerH = h.toLowerCase();
-    return typeof student[h] === 'number' && 
-      !lowerH.includes('s.no') && !lowerH.includes('sr.') && 
-      !lowerH.includes('name') && !lowerH.includes('%') &&
-      !lowerH.includes('admn') && !lowerH.includes('admin') &&
-      !lowerH.includes('roll') && !lowerH.includes('rank') &&
-      !lowerH.includes('dob') && !lowerH.includes('date') &&
-      !lowerH.includes('grand total') && !lowerH.includes('total');
+  // Calculate obtained and max marks from opted subjects only
+  let obtainedMarks = 0;
+  let maxMarks = 0;
+  optedSubjects.forEach(h => {
+    const val = parseFloat(student[h]);
+    if (!isNaN(val)) {
+      obtainedMarks += val;
+      const headerMax = getMaxMarksFromHeader(h);
+      maxMarks += headerMax || 100; // default to 100 if max marks not in header
+    }
   });
+  const calculatedPercent = maxMarks > 0 ? parseFloat(((obtainedMarks / maxMarks) * 100).toFixed(2)) : null;
 
-  const pieData = subjectCols.map((h, i) => ({
-    name: h.replace(/\s*\+\s*30/g, '').trim(),
-    value: student[h] || 0,
+  // Chart data — only opted subjects
+  const barData = optedSubjects.map((h, i) => ({
+    name: h.replace(/\s*\+\s*30/g, '').replace(/\s+\d+$/, '').trim(),
+    value: parseFloat(student[h]) || 0,
+    maxMarks: getMaxMarksFromHeader(h) || 100,
     color: CHART_COLORS[i % CHART_COLORS.length]
   }));
 
+  // Radar chart data
+  const radarData = optedSubjects.map(h => {
+    const maxM = getMaxMarksFromHeader(h) || 100;
+    const score = parseFloat(student[h]) || 0;
+    return {
+      subject: h.replace(/\s*\+\s*30/g, '').replace(/\s+\d+$/, '').trim(),
+      score,
+      percentage: parseFloat(((score / maxM) * 100).toFixed(1)),
+    };
+  });
+
+  // Metadata fields (non-subject, non-total)
+  const metaFields = headers.filter(h => {
+    return !subjectCols.includes(h) && 
+      !h.toLowerCase().includes('grand total') && 
+      !h.toLowerCase().includes('total') && 
+      !h.toLowerCase().includes('%');
+  });
+
+  // PDF Download
+  const downloadPDF = async () => {
+    if (!reportRef.current) return;
+    setDownloading(true);
+
+    try {
+      await new Promise(r => setTimeout(r, 500));
+
+      const canvas = await html2canvas(reportRef.current, {
+        backgroundColor: '#ffffff',
+        scale: 2,
+        useCORS: true,
+        logging: false,
+        windowWidth: 800,
+      });
+
+      const imgData = canvas.toDataURL('image/png');
+      const pdf = new jsPDF('p', 'mm', 'a4');
+
+      const pageWidth = pdf.internal.pageSize.getWidth();
+      const pageHeight = pdf.internal.pageSize.getHeight();
+      const margin = 10;
+      const usableWidth = pageWidth - (margin * 2);
+
+      const imgWidth = canvas.width;
+      const imgHeight = canvas.height;
+      const ratio = usableWidth / imgWidth;
+      const scaledHeight = imgHeight * ratio;
+
+      if (scaledHeight <= pageHeight - (margin * 2)) {
+        pdf.addImage(imgData, 'PNG', margin, margin, usableWidth, scaledHeight);
+      } else {
+        let remainingHeight = imgHeight;
+        let sourceY = 0;
+        const pageContentHeight = (pageHeight - (margin * 2)) / ratio;
+
+        while (remainingHeight > 0) {
+          const sliceHeight = Math.min(pageContentHeight, remainingHeight);
+          const tempCanvas = document.createElement('canvas');
+          tempCanvas.width = imgWidth;
+          tempCanvas.height = sliceHeight;
+          const ctx = tempCanvas.getContext('2d');
+          ctx.drawImage(canvas, 0, sourceY, imgWidth, sliceHeight, 0, 0, imgWidth, sliceHeight);
+
+          const sliceData = tempCanvas.toDataURL('image/png');
+          const scaledSliceHeight = sliceHeight * ratio;
+
+          if (sourceY > 0) pdf.addPage();
+          pdf.addImage(sliceData, 'PNG', margin, margin, usableWidth, scaledSliceHeight);
+
+          sourceY += sliceHeight;
+          remainingHeight -= sliceHeight;
+        }
+      }
+
+      pdf.save(`${name}_Report.pdf`);
+    } catch (err) {
+      console.error('PDF generation failed:', err);
+      alert('PDF download failed. Try again.');
+    }
+    setDownloading(false);
+  };
+
   return (
     <div className="modal-overlay" onClick={onClose}>
-      <div className="modal-card fade-in print-region" onClick={e => e.stopPropagation()}>
-        <div className="modal-header print-hide">
+      <div className="modal-card fade-in" onClick={e => e.stopPropagation()} style={{ maxWidth: '850px' }}>
+        <div className="modal-header">
           <h3><UserCheck size={20} /> Student Report</h3>
           <div style={{ display: 'flex', gap: '0.5rem' }}>
-            <button className="tool-btn outline" onClick={() => window.print()}>
-              <FileDown size={14} /> Download PDF
+            <button className="tool-btn primary" onClick={downloadPDF} disabled={downloading}>
+              {downloading ? <Loader2 size={14} className="spin" /> : <Download size={14} />}
+              {downloading ? ' Generating...' : ' Download PDF'}
             </button>
             <button className="icon-btn" onClick={onClose}><X size={18} /></button>
           </div>
         </div>
 
-        <div className="report-name-bar">
-          <div className="student-avatar">{name?.charAt(0)}</div>
-          <div>
-            <h2>{name}</h2>
-            {percent !== null && (
-              <span className={`score-badge ${getScoreColor(percent)}`}>
-                {percent}% ({percent >= 90 ? 'Excellent' : percent >= 80 ? 'Very Good' : percent >= 60 ? 'Good' : percent >= 50 ? 'Average' : 'Needs Improvement'})
-              </span>
-            )}
+        <div ref={reportRef} className="pdf-content">
+          {/* Report Header */}
+          <div className="pdf-header">
+            <h2 className="pdf-title">Student Performance Report</h2>
+            <p className="pdf-subtitle">{sheetName} • Generated on {new Date().toLocaleDateString('en-IN', { year: 'numeric', month: 'long', day: 'numeric' })}</p>
           </div>
-        </div>
 
-        {/* Details Grid */}
-        <div className="report-grid">
-          {headers.map(h => (
-            <div key={h} className="report-field">
-              <label>{h}</label>
-              <span className={typeof student[h] === 'number' ? getScoreColor(student[h]) : ''}>
-                {student[h] !== '' && student[h] !== null && student[h] !== undefined ? String(student[h]) : '—'}
-              </span>
+          {/* Student Info Bar */}
+          <div className="report-name-bar">
+            <div className="student-avatar">{name?.charAt(0)}</div>
+            <div>
+              <h2>{name}</h2>
+              {calculatedPercent !== null && (
+                <span className={`score-badge ${getScoreColor(calculatedPercent)}`}>
+                  {calculatedPercent}% ({calculatedPercent >= 90 ? 'Excellent' : calculatedPercent >= 80 ? 'Very Good' : calculatedPercent >= 60 ? 'Good' : calculatedPercent >= 50 ? 'Average' : 'Needs Improvement'})
+                </span>
+              )}
             </div>
-          ))}
-        </div>
-
-        {/* Subject Chart */}
-        {pieData.length > 0 && (
-          <div className="chart-box report-chart">
-            <h4>Subject-wise Score Breakdown</h4>
-            <ResponsiveContainer width="100%" height={250}>
-              <BarChart data={pieData} margin={{ top: 10, right: 20, left: 0, bottom: 5 }}>
-                <CartesianGrid strokeDasharray="3 3" stroke="rgba(0,0,0,0.05)" />
-                <XAxis dataKey="name" tick={{ fontSize: 10 }} interval={0} angle={-30} textAnchor="end" height={60} />
-                <YAxis tick={{ fontSize: 12 }} />
-                <Tooltip />
-                <Bar dataKey="value" radius={[4, 4, 0, 0]}>
-                  {pieData.map((entry, i) => <Cell key={i} fill={entry.color} />)}
-                </Bar>
-              </BarChart>
-            </ResponsiveContainer>
+            <div className="total-badge-group">
+              {total !== null && total !== '' && (
+                <div className="total-badge">
+                  <span className="total-label">Obtained</span>
+                  <span className="total-value">{obtainedMarks}</span>
+                </div>
+              )}
+              {maxMarks > 0 && (
+                <div className="total-badge">
+                  <span className="total-label">Max Marks</span>
+                  <span className="total-value total-max">{maxMarks}</span>
+                </div>
+              )}
+            </div>
           </div>
-        )}
+
+          {/* Student Details */}
+          {metaFields.length > 0 && (
+            <div className="report-section">
+              <h4 className="report-section-title">📋 Student Details</h4>
+              <div className="report-grid">
+                {metaFields.map(h => {
+                  const val = student[h];
+                  return (
+                    <div key={h} className="report-field">
+                      <label>{h}</label>
+                      <span>{val !== '' && val !== null && val !== undefined ? String(val) : '—'}</span>
+                    </div>
+                  );
+                })}
+              </div>
+            </div>
+          )}
+
+          {/* Opted Subjects - Score Matrix */}
+          {optedSubjects.length > 0 && (
+            <div className="report-section">
+              <h4 className="report-section-title">📊 Subject Scores (Opted Subjects Only)</h4>
+              <div className="report-grid">
+                {optedSubjects.map(h => {
+                  const val = student[h];
+                  const maxM = getMaxMarksFromHeader(h);
+                  return (
+                    <div key={h} className="report-field">
+                      <label>{h}</label>
+                      <span className={typeof val === 'number' ? getScoreColor((val / (maxM || 100)) * 100) : ''}>
+                        {String(val)} {maxM ? `/ ${maxM}` : ''}
+                      </span>
+                    </div>
+                  );
+                })}
+                {totalCol && (
+                  <div className="report-field highlight-field">
+                    <label>Grand Total</label>
+                    <span className="score-excellent">{obtainedMarks} / {maxMarks}</span>
+                  </div>
+                )}
+                {calculatedPercent !== null && (
+                  <div className="report-field highlight-field">
+                    <label>Percentage</label>
+                    <span className={getScoreColor(calculatedPercent)}>{calculatedPercent}%</span>
+                  </div>
+                )}
+              </div>
+            </div>
+          )}
+
+          {/* Not-opted Subjects */}
+          {notOptedSubjects.length > 0 && (
+            <div className="report-section">
+              <h4 className="report-section-title" style={{ color: 'var(--text-secondary)', fontSize: '0.85rem' }}>
+                🚫 Not Opted Subjects
+              </h4>
+              <div className="not-opted-list">
+                {notOptedSubjects.map(h => (
+                  <span key={h} className="not-opted-tag">{h.replace(/\s+\d+$/, '').trim()}</span>
+                ))}
+              </div>
+            </div>
+          )}
+
+          {/* Subject Bar Chart */}
+          {barData.length > 0 && (
+            <div className="report-section">
+              <h4 className="report-section-title">📈 Subject-wise Score Chart</h4>
+              <div className="chart-box report-chart">
+                <ResponsiveContainer width="100%" height={280}>
+                  <BarChart data={barData} margin={{ top: 10, right: 20, left: 0, bottom: 5 }}>
+                    <CartesianGrid strokeDasharray="3 3" stroke="rgba(0,0,0,0.05)" />
+                    <XAxis dataKey="name" tick={{ fontSize: 10 }} interval={0} angle={-30} textAnchor="end" height={70} />
+                    <YAxis tick={{ fontSize: 12 }} />
+                    <Tooltip />
+                    <Bar dataKey="value" name="Score" radius={[4, 4, 0, 0]}>
+                      {barData.map((entry, i) => <Cell key={i} fill={entry.color} />)}
+                    </Bar>
+                  </BarChart>
+                </ResponsiveContainer>
+              </div>
+            </div>
+          )}
+
+          {/* Radar Chart */}
+          {radarData.length >= 3 && (
+            <div className="report-section">
+              <h4 className="report-section-title">🎯 Performance Radar</h4>
+              <div className="chart-box report-chart">
+                <ResponsiveContainer width="100%" height={280}>
+                  <RadarChart data={radarData} cx="50%" cy="50%" outerRadius="75%">
+                    <PolarGrid stroke="rgba(0,0,0,0.08)" />
+                    <PolarAngleAxis dataKey="subject" tick={{ fontSize: 10 }} />
+                    <PolarRadiusAxis tick={{ fontSize: 10 }} domain={[0, 100]} />
+                    <Radar name="Score %" dataKey="percentage" stroke="#6366f1" fill="#6366f1" fillOpacity={0.25} strokeWidth={2} />
+                    <Tooltip />
+                  </RadarChart>
+                </ResponsiveContainer>
+              </div>
+            </div>
+          )}
+
+          {/* Footer */}
+          <div className="pdf-footer">
+            <p>This report was auto-generated by the Target Analysis Report Generator.</p>
+            <p>Subjects marked with "-" are not opted and excluded from Grand Total & percentage calculations.</p>
+          </div>
+        </div>
       </div>
-      {/* CSS injected directly for print layout of this modal */}
-      <style dangerouslySetInnerHTML={{__html: `
-        @media print {
-          body * { visibility: hidden; }
-          .print-region, .print-region * { visibility: visible; }
-          .print-region {
-            position: absolute !important;
-            left: 0 !important; top: 0 !important;
-            width: 100% !important; margin: 0 !important;
-            box-shadow: none !important; border: none !important;
-          }
-          .print-hide { display: none !important; }
-          .modal-overlay { background: transparent !important; }
-          /* Fix chart rendering on print */
-          .recharts-responsive-container { width: 100% !important; height: 350px !important; }
-        }
-      `}} />
     </div>
   );
 }
@@ -782,10 +1142,7 @@ function CreateTemplateModal({ onClose, onCreate }) {
     if (!className.trim()) { alert('Class name is required'); return; }
     if (numSections < 1) { alert('At least 1 section is required'); return; }
     if (subjects.length === 0) { alert('Add at least 1 subject'); return; }
-    
-    // Use exact expected target sheet headers
     const newHeaders = ['S.No', 'Admn. No.', 'Name', ...subjects, 'Grand Total', '% in IX'];
-    
     onCreate({ className: className.trim(), numSections, subjects: newHeaders.slice(3, -2) });
   };
 
