@@ -404,21 +404,32 @@ export default function App() {
   const classStats = useMemo(() => {
     if (!currentSheet || currentSheet.rows.length === 0) return null;
     const totalCol = currentSheet.headers.find(h => h.toLowerCase().includes('grand total') || h.toLowerCase() === 'total');
+    const percentCol = findTargetColumn(currentSheet.headers); // % in IX+30, Grand Total, or % in IX
     const nameCol = currentSheet.headers.find(h => h.toLowerCase().includes('name') && !h.toLowerCase().includes('father') && !h.toLowerCase().includes('mother'));
-    if (!totalCol) return null;
+    
+    // Use percentage column for average; fall back to totalCol
+    const avgCol = percentCol || totalCol;
+    if (!avgCol) return null;
 
-    const scored = currentSheet.rows.filter(r => !isNaN(parseFloat(r[totalCol])) && parseFloat(r[totalCol]) > 0);
+    // For ranking/top/bottom, prefer totalCol (raw marks), fall back to avgCol
+    const rankCol = totalCol || avgCol;
+
+    const scored = currentSheet.rows.filter(r => !isNaN(parseFloat(r[rankCol])) && parseFloat(r[rankCol]) > 0);
     if (scored.length === 0) return null;
 
-    const scores = scored.map(r => parseFloat(r[totalCol]));
-    const avg = scores.reduce((a, b) => a + b, 0) / scores.length;
-    const maxScore = Math.max(...scores);
-    const minScore = Math.min(...scores);
-    const topStudent = scored.find(r => parseFloat(r[totalCol]) === maxScore);
-    const bottomStudent = scored.find(r => parseFloat(r[totalCol]) === minScore);
+    // Average uses percentage column
+    const avgScores = scored.filter(r => !isNaN(parseFloat(r[avgCol]))).map(r => parseFloat(r[avgCol]));
+    const avg = avgScores.length > 0 ? avgScores.reduce((a, b) => a + b, 0) / avgScores.length : 0;
+
+    // Top/bottom uses rank column (Grand Total)
+    const rankScores = scored.map(r => parseFloat(r[rankCol]));
+    const maxScore = Math.max(...rankScores);
+    const minScore = Math.min(...rankScores);
+    const topStudent = scored.find(r => parseFloat(r[rankCol]) === maxScore);
+    const bottomStudent = scored.find(r => parseFloat(r[rankCol]) === minScore);
 
     // Rank students by total (descending)
-    const ranked = [...scored].sort((a, b) => parseFloat(b[totalCol]) - parseFloat(a[totalCol]));
+    const ranked = [...scored].sort((a, b) => parseFloat(b[rankCol]) - parseFloat(a[rankCol]));
     const rankMap = new Map();
     ranked.forEach((r, i) => rankMap.set(r, i + 1));
 
