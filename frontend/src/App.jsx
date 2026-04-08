@@ -177,8 +177,9 @@ export default function App() {
         setAnalysisSheets(data.sheetNames.slice());
         setScreen('dashboard');
       }
-    } catch {
-      alert('Cannot connect to backend. Is the Node server running on port 5000?');
+    } catch (err) {
+      console.error('Upload error:', err);
+      alert('Cannot connect to backend. Please check the server is running. Error: ' + err.message);
     }
     setLoading(false);
   };
@@ -459,7 +460,7 @@ export default function App() {
               <Plus size={20} /> Create New Template
             </button>
           </div>
-          <div className="info-bar"><Info size={16} /><span>Your data stays local — processed on your machine only.</span></div>
+          <div className="info-bar"><Info size={16} /><span>Your data stays local — processed securely and not stored.</span></div>
         </div>
       )}
 

@@ -2,7 +2,14 @@ const express = require('express');
 const multer = require('multer');
 const ExcelJS = require('exceljs');
 const cors = require('cors');
-const { ChartJSNodeCanvas } = require('chartjs-node-canvas');
+let ChartJSNodeCanvas;
+let canvasAvailable = false;
+try {
+  ChartJSNodeCanvas = require('chartjs-node-canvas').ChartJSNodeCanvas;
+  canvasAvailable = true;
+} catch (e) {
+  console.warn('chartjs-node-canvas not available (likely serverless environment). Charts will be skipped in exports.');
+}
 
 const app = express();
 app.use(cors());
@@ -18,11 +25,18 @@ const upload = multer({ storage: multer.memoryStorage() });
 // ========== Chart Generation Config ==========
 const CHART_WIDTH = 800;
 const CHART_HEIGHT = 400;
-const chartCanvas = new ChartJSNodeCanvas({ 
-  width: CHART_WIDTH, 
-  height: CHART_HEIGHT,
-  backgroundColour: 'white',
-});
+let chartCanvas = null;
+if (canvasAvailable) {
+  try {
+    chartCanvas = new ChartJSNodeCanvas({ 
+      width: CHART_WIDTH, 
+      height: CHART_HEIGHT,
+      backgroundColour: 'white',
+    });
+  } catch (e) {
+    console.warn('Failed to create chart canvas:', e.message);
+  }
+}
 
 const CHART_COLORS = ['#6366f1', '#ef4444', '#22c55e', '#3b82f6', '#f59e0b', '#8b5cf6', '#ec4899', '#14b8a6'];
 const RANGE_LABELS = ['95-100', '90-94', '80-89', '60-79', '50-59', 'below 50'];
@@ -103,6 +117,7 @@ function computeDistribution(rows, targetCol) {
 
 // Generate a bar chart for score distribution of a single section
 async function generateDistributionChart(sheetName, dist) {
+  if (!chartCanvas) return null;
   const config = {
     type: 'bar',
     data: {
@@ -133,6 +148,7 @@ async function generateDistributionChart(sheetName, dist) {
 
 // Generate a grouped bar chart comparing all sections
 async function generateSectionComparisonChart(sectionData) {
+  if (!chartCanvas) return null;
   const datasets = sectionData.map((sec, i) => ({
     label: sec.name,
     data: sec.dist.map(d => d.count),
@@ -165,6 +181,7 @@ async function generateSectionComparisonChart(sectionData) {
 
 // Generate a line chart for trend comparison across sections
 async function generateTrendChart(sectionData) {
+  if (!chartCanvas) return null;
   const datasets = sectionData.map((sec, i) => ({
     label: sec.name,
     data: sec.dist.map(d => d.count),
@@ -200,6 +217,7 @@ async function generateTrendChart(sectionData) {
 
 // Generate a pie/doughnut chart for overall distribution
 async function generatePieChart(sectionData) {
+  if (!canvasAvailable) return null;
   // Aggregate all sections
   const totals = RANGES.map((_, i) => {
     let sum = 0;
@@ -233,6 +251,7 @@ async function generatePieChart(sectionData) {
 
 // Generate subject-wise average comparison across sections
 async function generateSubjectComparisonChart(sheetsData, sheetNames) {
+  if (!canvasAvailable) return null;
   // Find common subject columns from the first sheet
   const firstSheet = sheetsData[sheetNames[0]];
   if (!firstSheet) return null;
@@ -491,12 +510,14 @@ const handleExport = async (req, res) => {
       // Generate and embed the chart image
       try {
         const chartBuffer = await generateDistributionChart(name, dist);
-        const imageId = workbook.addImage({ buffer: chartBuffer, extension: 'png' });
-        const startRow = dist.length + 8;
-        ws.addImage(imageId, {
-          tl: { col: 0, row: startRow },
-          ext: { width: CHART_WIDTH, height: CHART_HEIGHT },
-        });
+        if (chartBuffer) {
+          const imageId = workbook.addImage({ buffer: chartBuffer, extension: 'png' });
+          const startRow = dist.length + 8;
+          ws.addImage(imageId, {
+            tl: { col: 0, row: startRow },
+            ext: { width: CHART_WIDTH, height: CHART_HEIGHT },
+          });
+        }
       } catch (chartErr) {
         console.warn(`Chart generation failed for ${name}:`, chartErr.message);
       }
@@ -587,25 +608,31 @@ const handleExport = async (req, res) => {
       // Chart 1: Grouped bar comparison
       try {
         const barBuf = await generateSectionComparisonChart(allSectionData);
-        const imgId = workbook.addImage({ buffer: barBuf, extension: 'png' });
-        ws.addImage(imgId, { tl: { col: 0, row: chartRow }, ext: { width: CHART_WIDTH, height: CHART_HEIGHT } });
-        chartRow += 22;
+        if (barBuf) {
+          const imgId = workbook.addImage({ buffer: barBuf, extension: 'png' });
+          ws.addImage(imgId, { tl: { col: 0, row: chartRow }, ext: { width: CHART_WIDTH, height: CHART_HEIGHT } });
+          chartRow += 22;
+        }
       } catch (e) { console.warn('Bar comparison chart failed:', e.message); }
 
       // Chart 2: Trend line
       try {
         const lineBuf = await generateTrendChart(allSectionData);
-        const imgId = workbook.addImage({ buffer: lineBuf, extension: 'png' });
-        ws.addImage(imgId, { tl: { col: 0, row: chartRow }, ext: { width: CHART_WIDTH, height: CHART_HEIGHT } });
-        chartRow += 22;
+        if (lineBuf) {
+          const imgId = workbook.addImage({ buffer: lineBuf, extension: 'png' });
+          ws.addImage(imgId, { tl: { col: 0, row: chartRow }, ext: { width: CHART_WIDTH, height: CHART_HEIGHT } });
+          chartRow += 22;
+        }
       } catch (e) { console.warn('Trend chart failed:', e.message); }
 
       // Chart 3: Pie/doughnut
       try {
         const pieBuf = await generatePieChart(allSectionData);
-        const imgId = workbook.addImage({ buffer: pieBuf, extension: 'png' });
-        ws.addImage(imgId, { tl: { col: 0, row: chartRow }, ext: { width: 500, height: 400 } });
-        chartRow += 22;
+        if (pieBuf) {
+          const imgId = workbook.addImage({ buffer: pieBuf, extension: 'png' });
+          ws.addImage(imgId, { tl: { col: 0, row: chartRow }, ext: { width: 500, height: 400 } });
+          chartRow += 22;
+        }
       } catch (e) { console.warn('Pie chart failed:', e.message); }
 
       // Chart 4: Subject-wise comparison
