@@ -147,7 +147,9 @@ export default function App() {
   const [editValue, setEditValue] = useState('');
   const [showCreateModal, setShowCreateModal] = useState(false);
   const [searchQuery, setSearchQuery] = useState('');
+  const [pdfExporting, setPdfExporting] = useState(false);
   const fileRef = useRef(null);
+  const pdfReportRef = useRef(null);
 
   // ---------- UPLOAD ----------
   const handleFile = async (file) => {
@@ -386,6 +388,69 @@ export default function App() {
     setLoading(false);
   };
 
+  // ---------- EXPORT PDF ----------
+  const exportPDF = async () => {
+    setPdfExporting(true);
+    // Wait for the hidden PDF content to render with charts
+    await new Promise(r => setTimeout(r, 1500));
+
+    try {
+      const el = pdfReportRef.current;
+      if (!el) throw new Error('PDF content not ready');
+
+      const canvas = await html2canvas(el, {
+        backgroundColor: '#ffffff',
+        scale: 2,
+        useCORS: true,
+        logging: false,
+        windowWidth: 1100,
+      });
+
+      const pdf = new jsPDF('p', 'mm', 'a4');
+      const pageWidth = pdf.internal.pageSize.getWidth();
+      const pageHeight = pdf.internal.pageSize.getHeight();
+      const margin = 8;
+      const usableWidth = pageWidth - (margin * 2);
+      const imgWidth = canvas.width;
+      const imgHeight = canvas.height;
+      const ratio = usableWidth / imgWidth;
+      const scaledHeight = imgHeight * ratio;
+
+      if (scaledHeight <= pageHeight - (margin * 2)) {
+        const imgData = canvas.toDataURL('image/png');
+        pdf.addImage(imgData, 'PNG', margin, margin, usableWidth, scaledHeight);
+      } else {
+        let remainingHeight = imgHeight;
+        let sourceY = 0;
+        const pageContentHeight = (pageHeight - (margin * 2)) / ratio;
+
+        while (remainingHeight > 0) {
+          const sliceHeight = Math.min(pageContentHeight, remainingHeight);
+          const tempCanvas = document.createElement('canvas');
+          tempCanvas.width = imgWidth;
+          tempCanvas.height = sliceHeight;
+          const ctx = tempCanvas.getContext('2d');
+          ctx.drawImage(canvas, 0, sourceY, imgWidth, sliceHeight, 0, 0, imgWidth, sliceHeight);
+
+          const sliceData = tempCanvas.toDataURL('image/png');
+          const scaledSliceHeight = sliceHeight * ratio;
+
+          if (sourceY > 0) pdf.addPage();
+          pdf.addImage(sliceData, 'PNG', margin, margin, usableWidth, scaledSliceHeight);
+
+          sourceY += sliceHeight;
+          remainingHeight -= sliceHeight;
+        }
+      }
+
+      pdf.save(`Analysis_Report_${fileName.replace('.xlsx', '')}.pdf`);
+    } catch (err) {
+      console.error('PDF export failed:', err);
+      alert('PDF export failed: ' + err.message);
+    }
+    setPdfExporting(false);
+  };
+
   // ---------- RESET ----------
   const resetAll = () => {
     if (!confirm('Reset everything? All changes will be lost.')) return;
@@ -520,6 +585,9 @@ export default function App() {
             <button className="tool-btn success" onClick={() => { setShowAnalysis(true); }}><BarChart3 size={16} /> Class Analysis</button>
             <button className="tool-btn outline" onClick={exportExcel} disabled={loading}>
               {loading ? <Loader2 size={16} className="spin" /> : <FileDown size={16} />} Export Excel
+            </button>
+            <button className="tool-btn outline" onClick={exportPDF} disabled={pdfExporting}>
+              {pdfExporting ? <Loader2 size={16} className="spin" /> : <Printer size={16} />} Export PDF
             </button>
             <button className="tool-btn outline" onClick={addSheet}><Plus size={16} /> New Sheet</button>
             <button className="tool-btn danger-outline" onClick={resetAll}><RotateCcw size={16} /> Reset All</button>
@@ -658,6 +726,20 @@ export default function App() {
           sheetName={activeSheet} 
           onClose={() => setStudentReport(null)} 
         />
+      )}
+
+      {/* ===== HIDDEN PDF REPORT CONTENT ===== */}
+      {pdfExporting && (
+        <div style={{ position: 'fixed', left: '-9999px', top: 0, zIndex: -1 }}>
+          <PDFReportContent
+            ref={pdfReportRef}
+            fileName={fileName}
+            sheetNames={sheetNames}
+            sheets={sheets}
+            analysisData={analysisData}
+            subjectComparison={subjectComparison}
+          />
+        </div>
       )}
     </div>
   );
@@ -855,6 +937,182 @@ function SheetAnalysis({ sheetName, sheet }) {
     </div>
   );
 }
+
+// ========== PDF REPORT CONTENT (hidden, for export) ==========
+const PDFReportContent = React.forwardRef(function PDFReportContent({ fileName, sheetNames, sheets, analysisData, subjectComparison }, ref) {
+  const PIE_COLORS = ['#22c55e', '#3b82f6', '#8b5cf6', '#f59e0b', '#f97316', '#ef4444'];
+
+  // Per-sheet analysis
+  const sheetAnalyses = sheetNames.map(name => {
+    const sheet = sheets[name];
+    if (!sheet) return null;
+    const analysis = computeSheetAnalysis(sheet);
+    return analysis ? { name, ...analysis } : null;
+  }).filter(Boolean);
+
+  const pieData = analysisData ? analysisData.rows.slice(0, -1).map(r => ({
+    name: r.Range,
+    value: r.students,
+  })) : [];
+
+  return (
+    <div ref={ref} style={{ width: '1050px', padding: '40px', background: '#fff', fontFamily: 'Inter, system-ui, sans-serif', color: '#1e293b' }}>
+      {/* Title */}
+      <div style={{ textAlign: 'center', marginBottom: '30px', borderBottom: '3px solid #6366f1', paddingBottom: '20px' }}>
+        <h1 style={{ fontSize: '24px', fontWeight: 700, color: '#1e293b', margin: 0 }}>📊 Target Analysis Report</h1>
+        <p style={{ fontSize: '14px', color: '#64748b', margin: '8px 0 0' }}>{fileName} • Generated on {new Date().toLocaleDateString('en-IN', { year: 'numeric', month: 'long', day: 'numeric' })}</p>
+      </div>
+
+      {/* Per-Sheet Analysis */}
+      {sheetAnalyses.map((sa) => (
+        <div key={sa.name} style={{ marginBottom: '35px', pageBreakInside: 'avoid' }}>
+          <h2 style={{ fontSize: '16px', fontWeight: 700, color: '#4f46e5', marginBottom: '12px', borderLeft: '4px solid #6366f1', paddingLeft: '10px' }}>
+            {sa.name} — Score Distribution (Target: {sa.targetCol})
+          </h2>
+          <div style={{ display: 'flex', gap: '20px', alignItems: 'flex-start' }}>
+            <table style={{ borderCollapse: 'collapse', fontSize: '13px', minWidth: '220px' }}>
+              <thead>
+                <tr>
+                  <th style={{ padding: '8px 14px', background: '#4f46e5', color: '#fff', textAlign: 'center', borderRadius: '6px 0 0 0' }}>Range</th>
+                  <th style={{ padding: '8px 14px', background: '#4f46e5', color: '#fff', textAlign: 'center', borderRadius: '0 6px 0 0' }}>Students</th>
+                </tr>
+              </thead>
+              <tbody>
+                {sa.rows.map((row, i) => (
+                  <tr key={i} style={{ background: i === sa.rows.length - 1 ? '#e0f2fe' : i % 2 === 0 ? '#f8fafc' : '#fff' }}>
+                    <td style={{ padding: '6px 14px', borderBottom: '1px solid #e2e8f0', fontWeight: i === sa.rows.length - 1 ? 700 : 500 }}>{row.Range}</td>
+                    <td style={{ padding: '6px 14px', borderBottom: '1px solid #e2e8f0', textAlign: 'center', fontWeight: 600 }}>{row.Count}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+            <div style={{ flex: 1 }}>
+              <ResponsiveContainer width="100%" height={240}>
+                <BarChart data={sa.rows.slice(0, -1)} margin={{ top: 5, right: 10, left: 0, bottom: 5 }}>
+                  <CartesianGrid strokeDasharray="3 3" stroke="rgba(0,0,0,0.06)" />
+                  <XAxis dataKey="Range" tick={{ fontSize: 11 }} />
+                  <YAxis tick={{ fontSize: 11 }} />
+                  <Tooltip />
+                  <Bar dataKey="Count" name={sa.name} radius={[4, 4, 0, 0]}>
+                    {sa.rows.slice(0, -1).map((entry, i) => (
+                      <Cell key={i} fill={entry.color} />
+                    ))}
+                  </Bar>
+                </BarChart>
+              </ResponsiveContainer>
+            </div>
+          </div>
+        </div>
+      ))}
+
+      {/* Section Comparison */}
+      {analysisData && analysisData.sections.length > 0 && (
+        <div style={{ marginBottom: '35px', pageBreakBefore: 'always' }}>
+          <h2 style={{ fontSize: '18px', fontWeight: 700, color: '#1e293b', marginBottom: '16px', textAlign: 'center', borderBottom: '2px solid #e2e8f0', paddingBottom: '10px' }}>
+            📈 Cumulative Section-wise Analysis
+          </h2>
+
+          {/* Comparison Table */}
+          <table style={{ borderCollapse: 'collapse', fontSize: '13px', width: '100%', marginBottom: '25px' }}>
+            <thead>
+              <tr>
+                {analysisData.headers.map(h => (
+                  <th key={h} style={{ padding: '8px 12px', background: '#4f46e5', color: '#fff', textAlign: 'center' }}>{h === 'per%' ? '%' : h === 'students' ? 'Total' : h}</th>
+                ))}
+              </tr>
+            </thead>
+            <tbody>
+              {analysisData.rows.map((row, i) => (
+                <tr key={i} style={{ background: i === analysisData.rows.length - 1 ? '#e0f2fe' : i % 2 === 0 ? '#f8fafc' : '#fff' }}>
+                  {analysisData.headers.map(h => (
+                    <td key={h} style={{ padding: '6px 12px', borderBottom: '1px solid #e2e8f0', textAlign: 'center', fontWeight: i === analysisData.rows.length - 1 || h === 'Range' ? 700 : 400 }}>
+                      {h === 'per%' ? `${row[h]}%` : row[h]}
+                    </td>
+                  ))}
+                </tr>
+              ))}
+            </tbody>
+          </table>
+
+          {/* Charts grid */}
+          <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '25px', marginBottom: '25px' }}>
+            <div>
+              <h3 style={{ fontSize: '13px', fontWeight: 600, color: '#475569', textAlign: 'center', marginBottom: '8px' }}>Section-wise Bar Comparison</h3>
+              <ResponsiveContainer width="100%" height={280}>
+                <BarChart data={analysisData.rows.slice(0, -1)} margin={{ top: 10, right: 10, left: 0, bottom: 5 }}>
+                  <CartesianGrid strokeDasharray="3 3" stroke="rgba(0,0,0,0.05)" />
+                  <XAxis dataKey="Range" tick={{ fontSize: 10 }} />
+                  <YAxis tick={{ fontSize: 10 }} />
+                  <Tooltip />
+                  <Legend wrapperStyle={{ fontSize: '11px' }} />
+                  {analysisData.sections.map((s, i) => (
+                    <Bar key={s} dataKey={s} fill={CHART_COLORS[i % CHART_COLORS.length]} radius={[3, 3, 0, 0]} />
+                  ))}
+                </BarChart>
+              </ResponsiveContainer>
+            </div>
+
+            <div>
+              <h3 style={{ fontSize: '13px', fontWeight: 600, color: '#475569', textAlign: 'center', marginBottom: '8px' }}>Trend Line Analysis</h3>
+              <ResponsiveContainer width="100%" height={280}>
+                <LineChart data={analysisData.rows.slice(0, -1)} margin={{ top: 10, right: 10, left: 0, bottom: 5 }}>
+                  <CartesianGrid strokeDasharray="3 3" stroke="rgba(0,0,0,0.05)" />
+                  <XAxis dataKey="Range" tick={{ fontSize: 10 }} />
+                  <YAxis tick={{ fontSize: 10 }} />
+                  <Tooltip />
+                  <Legend wrapperStyle={{ fontSize: '11px' }} />
+                  {analysisData.sections.map((s, i) => (
+                    <Line key={s} type="monotone" dataKey={s} stroke={CHART_COLORS[i % CHART_COLORS.length]} strokeWidth={2.5} dot={{ r: 4 }} />
+                  ))}
+                </LineChart>
+              </ResponsiveContainer>
+            </div>
+          </div>
+
+          <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '25px' }}>
+            <div>
+              <h3 style={{ fontSize: '13px', fontWeight: 600, color: '#475569', textAlign: 'center', marginBottom: '8px' }}>Overall Distribution</h3>
+              <ResponsiveContainer width="100%" height={280}>
+                <PieChart>
+                  <Pie data={pieData.filter(d => d.value > 0)} cx="50%" cy="50%" innerRadius={55} outerRadius={100} paddingAngle={3} dataKey="value"
+                    label={({ name, percent }) => `${name}: ${(percent * 100).toFixed(0)}%`}
+                  >
+                    {pieData.map((_, i) => <Cell key={i} fill={PIE_COLORS[i % PIE_COLORS.length]} />)}
+                  </Pie>
+                  <Tooltip />
+                  <Legend wrapperStyle={{ fontSize: '11px' }} />
+                </PieChart>
+              </ResponsiveContainer>
+            </div>
+
+            {subjectComparison && subjectComparison.data.length > 0 && (
+              <div>
+                <h3 style={{ fontSize: '13px', fontWeight: 600, color: '#475569', textAlign: 'center', marginBottom: '8px' }}>Subject-wise Average</h3>
+                <ResponsiveContainer width="100%" height={280}>
+                  <BarChart data={subjectComparison.data} margin={{ top: 10, right: 10, left: 0, bottom: 5 }}>
+                    <CartesianGrid strokeDasharray="3 3" stroke="rgba(0,0,0,0.05)" />
+                    <XAxis dataKey="subject" tick={{ fontSize: 9 }} interval={0} angle={-25} textAnchor="end" height={55} />
+                    <YAxis tick={{ fontSize: 10 }} />
+                    <Tooltip />
+                    <Legend wrapperStyle={{ fontSize: '11px' }} />
+                    {subjectComparison.sections.map((s, i) => (
+                      <Bar key={s} dataKey={s} fill={CHART_COLORS[i % CHART_COLORS.length]} radius={[3, 3, 0, 0]} />
+                    ))}
+                  </BarChart>
+                </ResponsiveContainer>
+              </div>
+            )}
+          </div>
+        </div>
+      )}
+
+      {/* Footer */}
+      <div style={{ textAlign: 'center', fontSize: '11px', color: '#94a3b8', borderTop: '1px solid #e2e8f0', paddingTop: '15px', marginTop: '30px' }}>
+        <p>Auto-generated by Target Analysis Report Generator • Subjects marked with "-" are excluded from totals & charts</p>
+      </div>
+    </div>
+  );
+});
 
 // ========== STUDENT REPORT MODAL ==========
 function StudentReportModal({ student, headers, sheetName, onClose }) {
