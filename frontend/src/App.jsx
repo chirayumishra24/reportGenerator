@@ -398,49 +398,74 @@ export default function App() {
       const el = pdfReportRef.current;
       if (!el) throw new Error('PDF content not ready');
 
-      const canvas = await html2canvas(el, {
-        backgroundColor: '#ffffff',
-        scale: 2,
-        useCORS: true,
-        logging: false,
-        windowWidth: 1100,
-      });
+      const blocks = el.querySelectorAll('.pdf-page-block');
+      if (!blocks || blocks.length === 0) throw new Error('No PDF blocks found');
 
       const pdf = new jsPDF('p', 'mm', 'a4');
       const pageWidth = pdf.internal.pageSize.getWidth();
       const pageHeight = pdf.internal.pageSize.getHeight();
-      const margin = 8;
+      const margin = 10;
       const usableWidth = pageWidth - (margin * 2);
-      const imgWidth = canvas.width;
-      const imgHeight = canvas.height;
-      const ratio = usableWidth / imgWidth;
-      const scaledHeight = imgHeight * ratio;
+      
+      let currentY = margin;
+      let isFirstPage = true;
 
-      if (scaledHeight <= pageHeight - (margin * 2)) {
-        const imgData = canvas.toDataURL('image/png');
-        pdf.addImage(imgData, 'PNG', margin, margin, usableWidth, scaledHeight);
-      } else {
-        let remainingHeight = imgHeight;
-        let sourceY = 0;
-        const pageContentHeight = (pageHeight - (margin * 2)) / ratio;
+      for (let i = 0; i < blocks.length; i++) {
+        const block = blocks[i];
+        const canvas = await html2canvas(block, {
+          backgroundColor: '#ffffff',
+          scale: 2,
+          useCORS: true,
+          logging: false,
+          windowWidth: 1050,
+        });
 
-        while (remainingHeight > 0) {
-          const sliceHeight = Math.min(pageContentHeight, remainingHeight);
-          const tempCanvas = document.createElement('canvas');
-          tempCanvas.width = imgWidth;
-          tempCanvas.height = sliceHeight;
-          const ctx = tempCanvas.getContext('2d');
-          ctx.drawImage(canvas, 0, sourceY, imgWidth, sliceHeight, 0, 0, imgWidth, sliceHeight);
+        const imgWidth = canvas.width;
+        const imgHeight = canvas.height;
+        const ratio = usableWidth / imgWidth;
+        const scaledHeight = imgHeight * ratio;
 
-          const sliceData = tempCanvas.toDataURL('image/png');
-          const scaledSliceHeight = sliceHeight * ratio;
-
-          if (sourceY > 0) pdf.addPage();
-          pdf.addImage(sliceData, 'PNG', margin, margin, usableWidth, scaledSliceHeight);
-
-          sourceY += sliceHeight;
-          remainingHeight -= sliceHeight;
+        // If not first page and it doesn't fit, add new page
+        if (!isFirstPage && currentY + scaledHeight > pageHeight - margin) {
+          pdf.addPage();
+          currentY = margin;
         }
+
+        const imgData = canvas.toDataURL('image/png');
+        // If a single block is somehow taller than a whole page, we might still have to slice it
+        if (scaledHeight > pageHeight - (margin * 2)) {
+          let remainingHeight = imgHeight;
+          let sourceY = 0;
+          const pageContentHeight = (pageHeight - (margin * 2)) / ratio;
+
+          while (remainingHeight > 0) {
+            const sliceHeight = Math.min(pageContentHeight, remainingHeight);
+            const tempCanvas = document.createElement('canvas');
+            tempCanvas.width = imgWidth;
+            tempCanvas.height = sliceHeight;
+            const ctx = tempCanvas.getContext('2d');
+            ctx.drawImage(canvas, 0, sourceY, imgWidth, sliceHeight, 0, 0, imgWidth, sliceHeight);
+
+            const sliceData = tempCanvas.toDataURL('image/png');
+            const scaledSliceHeight = sliceHeight * ratio;
+
+            if (sourceY > 0) pdf.addPage();
+            // Use currentY for the first overflowing chunk, then margin for subsequent
+            const drawY = sourceY === 0 ? currentY : margin;
+            pdf.addImage(sliceData, 'PNG', margin, drawY, usableWidth, scaledSliceHeight);
+
+            sourceY += sliceHeight;
+            remainingHeight -= sliceHeight;
+            if (sourceY === sliceHeight) { // just drew the first chunk
+               currentY = drawY + scaledSliceHeight; 
+            }
+          }
+          currentY = margin; // reset for next block since we likely spilled over
+        } else {
+          pdf.addImage(imgData, 'PNG', margin, currentY, usableWidth, scaledHeight);
+          currentY += scaledHeight + 10; // 10mm gap between blocks
+        }
+        isFirstPage = false;
       }
 
       pdf.save(`Analysis_Report_${fileName.replace('.xlsx', '')}.pdf`);
@@ -958,14 +983,14 @@ const PDFReportContent = React.forwardRef(function PDFReportContent({ fileName, 
   return (
     <div ref={ref} style={{ width: '1050px', padding: '40px', background: '#fff', fontFamily: 'Inter, system-ui, sans-serif', color: '#1e293b' }}>
       {/* Title */}
-      <div style={{ textAlign: 'center', marginBottom: '30px', borderBottom: '3px solid #6366f1', paddingBottom: '20px' }}>
+      <div className="pdf-page-block" style={{ textAlign: 'center', marginBottom: '15px', borderBottom: '3px solid #6366f1', paddingBottom: '20px' }}>
         <h1 style={{ fontSize: '24px', fontWeight: 700, color: '#1e293b', margin: 0 }}>📊 Target Analysis Report</h1>
         <p style={{ fontSize: '14px', color: '#64748b', margin: '8px 0 0' }}>{fileName} • Generated on {new Date().toLocaleDateString('en-IN', { year: 'numeric', month: 'long', day: 'numeric' })}</p>
       </div>
 
       {/* Per-Sheet Analysis */}
       {sheetAnalyses.map((sa) => (
-        <div key={sa.name} style={{ marginBottom: '35px', pageBreakInside: 'avoid' }}>
+        <div key={sa.name} className="pdf-page-block" style={{ marginBottom: '15px', padding: '10px 0' }}>
           <h2 style={{ fontSize: '16px', fontWeight: 700, color: '#4f46e5', marginBottom: '12px', borderLeft: '4px solid #6366f1', paddingLeft: '10px' }}>
             {sa.name} — Score Distribution (Target: {sa.targetCol})
           </h2>
@@ -987,19 +1012,17 @@ const PDFReportContent = React.forwardRef(function PDFReportContent({ fileName, 
               </tbody>
             </table>
             <div style={{ flex: 1 }}>
-              <ResponsiveContainer width="100%" height={240}>
-                <BarChart data={sa.rows.slice(0, -1)} margin={{ top: 5, right: 10, left: 0, bottom: 5 }}>
-                  <CartesianGrid strokeDasharray="3 3" stroke="rgba(0,0,0,0.06)" />
-                  <XAxis dataKey="Range" tick={{ fontSize: 11 }} />
-                  <YAxis tick={{ fontSize: 11 }} />
-                  <Tooltip />
-                  <Bar dataKey="Count" name={sa.name} radius={[4, 4, 0, 0]}>
-                    {sa.rows.slice(0, -1).map((entry, i) => (
-                      <Cell key={i} fill={entry.color} />
-                    ))}
-                  </Bar>
-                </BarChart>
-              </ResponsiveContainer>
+              <BarChart width={730} height={240} data={sa.rows.slice(0, -1)} margin={{ top: 5, right: 10, left: 0, bottom: 5 }}>
+                <CartesianGrid strokeDasharray="3 3" stroke="rgba(0,0,0,0.06)" />
+                <XAxis dataKey="Range" tick={{ fontSize: 11 }} />
+                <YAxis tick={{ fontSize: 11 }} />
+                <Tooltip />
+                <Bar dataKey="Count" name={sa.name} radius={[4, 4, 0, 0]} isAnimationActive={false}>
+                  {sa.rows.slice(0, -1).map((entry, i) => (
+                    <Cell key={i} fill={entry.color} />
+                  ))}
+                </Bar>
+              </BarChart>
             </div>
           </div>
         </div>
@@ -1007,10 +1030,11 @@ const PDFReportContent = React.forwardRef(function PDFReportContent({ fileName, 
 
       {/* Section Comparison */}
       {analysisData && analysisData.sections.length > 0 && (
-        <div style={{ marginBottom: '35px', pageBreakBefore: 'always' }}>
-          <h2 style={{ fontSize: '18px', fontWeight: 700, color: '#1e293b', marginBottom: '16px', textAlign: 'center', borderBottom: '2px solid #e2e8f0', paddingBottom: '10px' }}>
-            📈 Cumulative Section-wise Analysis
-          </h2>
+        <div style={{ marginTop: '10px' }}>
+          <div className="pdf-page-block" style={{ marginBottom: '15px', padding: '10px 0' }}>
+            <h2 style={{ fontSize: '18px', fontWeight: 700, color: '#1e293b', marginBottom: '16px', textAlign: 'center', borderBottom: '2px solid #e2e8f0', paddingBottom: '10px' }}>
+              📈 Cumulative Section-wise Analysis
+            </h2>
 
           {/* Comparison Table */}
           <table style={{ borderCollapse: 'collapse', fontSize: '13px', width: '100%', marginBottom: '25px' }}>
@@ -1033,73 +1057,66 @@ const PDFReportContent = React.forwardRef(function PDFReportContent({ fileName, 
               ))}
             </tbody>
           </table>
+          </div>
 
           {/* Charts grid */}
-          <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '25px', marginBottom: '25px' }}>
+          <div className="pdf-page-block" style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '25px', marginBottom: '15px', padding: '10px 0' }}>
             <div>
               <h3 style={{ fontSize: '13px', fontWeight: 600, color: '#475569', textAlign: 'center', marginBottom: '8px' }}>Section-wise Bar Comparison</h3>
-              <ResponsiveContainer width="100%" height={280}>
-                <BarChart data={analysisData.rows.slice(0, -1)} margin={{ top: 10, right: 10, left: 0, bottom: 5 }}>
-                  <CartesianGrid strokeDasharray="3 3" stroke="rgba(0,0,0,0.05)" />
-                  <XAxis dataKey="Range" tick={{ fontSize: 10 }} />
-                  <YAxis tick={{ fontSize: 10 }} />
-                  <Tooltip />
-                  <Legend wrapperStyle={{ fontSize: '11px' }} />
-                  {analysisData.sections.map((s, i) => (
-                    <Bar key={s} dataKey={s} fill={CHART_COLORS[i % CHART_COLORS.length]} radius={[3, 3, 0, 0]} />
-                  ))}
-                </BarChart>
-              </ResponsiveContainer>
+              <BarChart width={460} height={280} data={analysisData.rows.slice(0, -1)} margin={{ top: 10, right: 10, left: 0, bottom: 5 }}>
+                <CartesianGrid strokeDasharray="3 3" stroke="rgba(0,0,0,0.05)" />
+                <XAxis dataKey="Range" tick={{ fontSize: 10 }} />
+                <YAxis tick={{ fontSize: 10 }} />
+                <Tooltip />
+                <Legend wrapperStyle={{ fontSize: '11px' }} />
+                {analysisData.sections.map((s, i) => (
+                  <Bar key={s} dataKey={s} fill={CHART_COLORS[i % CHART_COLORS.length]} radius={[3, 3, 0, 0]} isAnimationActive={false} />
+                ))}
+              </BarChart>
             </div>
 
             <div>
               <h3 style={{ fontSize: '13px', fontWeight: 600, color: '#475569', textAlign: 'center', marginBottom: '8px' }}>Trend Line Analysis</h3>
-              <ResponsiveContainer width="100%" height={280}>
-                <LineChart data={analysisData.rows.slice(0, -1)} margin={{ top: 10, right: 10, left: 0, bottom: 5 }}>
-                  <CartesianGrid strokeDasharray="3 3" stroke="rgba(0,0,0,0.05)" />
-                  <XAxis dataKey="Range" tick={{ fontSize: 10 }} />
-                  <YAxis tick={{ fontSize: 10 }} />
-                  <Tooltip />
-                  <Legend wrapperStyle={{ fontSize: '11px' }} />
-                  {analysisData.sections.map((s, i) => (
-                    <Line key={s} type="monotone" dataKey={s} stroke={CHART_COLORS[i % CHART_COLORS.length]} strokeWidth={2.5} dot={{ r: 4 }} />
-                  ))}
-                </LineChart>
-              </ResponsiveContainer>
+              <LineChart width={460} height={280} data={analysisData.rows.slice(0, -1)} margin={{ top: 10, right: 10, left: 0, bottom: 5 }}>
+                <CartesianGrid strokeDasharray="3 3" stroke="rgba(0,0,0,0.05)" />
+                <XAxis dataKey="Range" tick={{ fontSize: 10 }} />
+                <YAxis tick={{ fontSize: 10 }} />
+                <Tooltip />
+                <Legend wrapperStyle={{ fontSize: '11px' }} />
+                {analysisData.sections.map((s, i) => (
+                  <Line key={s} type="monotone" dataKey={s} stroke={CHART_COLORS[i % CHART_COLORS.length]} strokeWidth={2.5} dot={{ r: 4 }} isAnimationActive={false} />
+                ))}
+              </LineChart>
             </div>
           </div>
 
-          <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '25px' }}>
+          <div className="pdf-page-block" style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '25px', marginBottom: '15px', padding: '10px 0' }}>
             <div>
               <h3 style={{ fontSize: '13px', fontWeight: 600, color: '#475569', textAlign: 'center', marginBottom: '8px' }}>Overall Distribution</h3>
-              <ResponsiveContainer width="100%" height={280}>
-                <PieChart>
-                  <Pie data={pieData.filter(d => d.value > 0)} cx="50%" cy="50%" innerRadius={55} outerRadius={100} paddingAngle={3} dataKey="value"
-                    label={({ name, percent }) => `${name}: ${(percent * 100).toFixed(0)}%`}
-                  >
-                    {pieData.map((_, i) => <Cell key={i} fill={PIE_COLORS[i % PIE_COLORS.length]} />)}
-                  </Pie>
-                  <Tooltip />
-                  <Legend wrapperStyle={{ fontSize: '11px' }} />
-                </PieChart>
-              </ResponsiveContainer>
+              <PieChart width={460} height={280}>
+                <Pie data={pieData.filter(d => d.value > 0)} cx="50%" cy="50%" innerRadius={55} outerRadius={100} paddingAngle={3} dataKey="value"
+                  label={({ name, percent }) => `${name}: ${(percent * 100).toFixed(0)}%`} isAnimationActive={false}
+                >
+                  {pieData.map((_, i) => <Cell key={i} fill={PIE_COLORS[i % PIE_COLORS.length]} />)}
+                </Pie>
+                <Tooltip />
+                <Legend wrapperStyle={{ fontSize: '11px' }} />
+              </PieChart>
             </div>
 
             {subjectComparison && subjectComparison.data.length > 0 && (
               <div>
                 <h3 style={{ fontSize: '13px', fontWeight: 600, color: '#475569', textAlign: 'center', marginBottom: '8px' }}>Subject-wise Average</h3>
-                <ResponsiveContainer width="100%" height={280}>
-                  <BarChart data={subjectComparison.data} margin={{ top: 10, right: 10, left: 0, bottom: 5 }}>
-                    <CartesianGrid strokeDasharray="3 3" stroke="rgba(0,0,0,0.05)" />
-                    <XAxis dataKey="subject" tick={{ fontSize: 9 }} interval={0} angle={-25} textAnchor="end" height={55} />
-                    <YAxis tick={{ fontSize: 10 }} />
-                    <Tooltip />
-                    <Legend wrapperStyle={{ fontSize: '11px' }} />
-                    {subjectComparison.sections.map((s, i) => (
-                      <Bar key={s} dataKey={s} fill={CHART_COLORS[i % CHART_COLORS.length]} radius={[3, 3, 0, 0]} />
-                    ))}
-                  </BarChart>
-                </ResponsiveContainer>
+                <BarChart width={460} height={280} data={subjectComparison.data} margin={{ top: 10, right: 10, left: 0, bottom: 5 }}>
+                  <CartesianGrid strokeDasharray="3 3" stroke="rgba(0,0,0,0.05)" />
+                  <XAxis dataKey="subject" tick={{ fontSize: 9 }} interval={0} angle={-25} textAnchor="end" height={55} />
+                  <YAxis tick={{ fontSize: 10 }} />
+                  <Tooltip />
+                  <Legend wrapperStyle={{ fontSize: '11px' }} />
+                  {subjectComparison.sections.map((s, i) => (
+                    <Bar key={s} dataKey={s} fill={CHART_COLORS[i % CHART_COLORS.length]} radius={[3, 3, 0, 0]} isAnimationActive={false} />
+                  ))}
+                </BarChart>
               </div>
             )}
           </div>
@@ -1107,7 +1124,7 @@ const PDFReportContent = React.forwardRef(function PDFReportContent({ fileName, 
       )}
 
       {/* Footer */}
-      <div style={{ textAlign: 'center', fontSize: '11px', color: '#94a3b8', borderTop: '1px solid #e2e8f0', paddingTop: '15px', marginTop: '30px' }}>
+      <div className="pdf-page-block" style={{ textAlign: 'center', fontSize: '11px', color: '#94a3b8', borderTop: '1px solid #e2e8f0', paddingTop: '15px', marginTop: '15px' }}>
         <p>Auto-generated by Target Analysis Report Generator • Subjects marked with "-" are excluded from totals & charts</p>
       </div>
     </div>
