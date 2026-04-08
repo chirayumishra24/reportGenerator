@@ -93,7 +93,9 @@ function getSubjectColumns(headers) {
       !lowerH.includes('father') && !lowerH.includes('mother') &&
       !lowerH.includes('gender') && !lowerH.includes('enrollment') &&
       !lowerH.includes('grand total') && !lowerH.includes('total') &&
-      !lowerH.includes('column');
+      !lowerH.includes('column') &&
+      !lowerH.includes('+30') && !lowerH.includes('+ 30') &&
+      !lowerH.includes('ix 100') && !lowerH.includes('x target');
   });
 }
 

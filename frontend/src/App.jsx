@@ -66,7 +66,9 @@ function getSubjectColumns(headers) {
       !lowerH.includes('father') && !lowerH.includes('mother') &&
       !lowerH.includes('gender') && !lowerH.includes('enrollment') &&
       !lowerH.includes('grand total') && !lowerH.includes('total') &&
-      !lowerH.includes('column');
+      !lowerH.includes('column') &&
+      !lowerH.includes('+30') && !lowerH.includes('+ 30') && // Exclude +30 target columns
+      !lowerH.includes('ix 100') && !lowerH.includes('x target'); // Exclude derived columns
   });
 }
 
@@ -76,13 +78,14 @@ function getMaxMarksFromHeader(header) {
   return match ? parseInt(match[1]) : null;
 }
 
-// Recalculate Grand Total excluding not-opted subjects (dash/empty)
+// Recalculate Grand Total and % excluding not-opted subjects (dash/empty)
 function recalcGrandTotal(row, headers) {
   const subjectCols = getSubjectColumns(headers);
   const totalCol = headers.find(h => h.toLowerCase().includes('grand total') || h.toLowerCase() === 'total');
   if (!totalCol) return row;
 
   let sum = 0;
+  let maxMarks = 0;
   let hasAny = false;
   subjectCols.forEach(h => {
     const val = row[h];
@@ -91,11 +94,20 @@ function recalcGrandTotal(row, headers) {
       if (!isNaN(sv)) {
         sum += sv;
         hasAny = true;
+        const headerMax = getMaxMarksFromHeader(h);
+        maxMarks += headerMax || 100;
       }
     }
   });
 
   row[totalCol] = hasAny ? sum : '';
+
+  // Also recalculate % in IX if it exists
+  const pctCol = headers.find(h => h.toLowerCase().includes('% in ix') && !h.toLowerCase().includes('+30'));
+  if (pctCol && hasAny && maxMarks > 0) {
+    row[pctCol] = parseFloat(((sum / maxMarks) * 100).toFixed(2));
+  }
+
   return row;
 }
 
