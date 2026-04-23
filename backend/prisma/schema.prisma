@@ -1,0 +1,69 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+model UploadBatch {
+  id        String     @id @default(cuid())
+  fileName  String
+  createdAt DateTime   @default(now())
+  sheets    ExamSheet[]
+}
+
+model ExamSheet {
+  id             String               @id @default(cuid())
+  name           String
+  normalizedName String
+  examName       String?
+  className      String?
+  sectionName    String?
+  headers        Json
+  createdAt      DateTime             @default(now())
+  uploadBatchId  String
+  uploadBatch    UploadBatch          @relation(fields: [uploadBatchId], references: [id], onDelete: Cascade)
+  performances   StudentPerformance[]
+
+  @@index([className, sectionName])
+  @@index([examName])
+}
+
+model Student {
+  id             String               @id @default(cuid())
+  name           String
+  normalizedName String
+  admissionNo    String?
+  className      String?
+  sectionName    String?
+  createdAt      DateTime             @default(now())
+  updatedAt      DateTime             @updatedAt
+  performances   StudentPerformance[]
+
+  @@unique([normalizedName, className, sectionName], name: "student_identity")
+  @@index([admissionNo])
+}
+
+model StudentPerformance {
+  id            String    @id @default(cuid())
+  studentId     String
+  examSheetId   String
+  rowKey        String?
+  class9Percent Float?
+  targetPercent Float?
+  examPercent   Float?
+  obtainedMarks Float?
+  maxMarks      Float?
+  totalValue    Float?
+  status        String?
+  subjects      Json?
+  rowData       Json?
+  createdAt     DateTime  @default(now())
+  student       Student   @relation(fields: [studentId], references: [id], onDelete: Cascade)
+  examSheet     ExamSheet @relation(fields: [examSheetId], references: [id], onDelete: Cascade)
+
+  @@unique([studentId, examSheetId], name: "student_exam_unique")
+  @@index([examPercent])
+}
