@@ -7,6 +7,7 @@ const {
   findRollColumn,
   normalizeIdentifier,
   normalizeStudentName,
+  resolveRowSection,
 } = require('./parser.service');
 
 function buildEmptyCumulativeReport() {
@@ -49,6 +50,76 @@ function choosePreferredText(currentValue = '', nextValue = '') {
   if (!current) return next;
   if (!next) return current;
   return next.length > current.length ? next : current;
+}
+
+function buildCompactNameKey(normalizedName = '') {
+  return String(normalizedName || '').replace(/\s+/g, '');
+}
+
+function getNameTokens(normalizedName = '') {
+  return String(normalizedName || '').split(/\s+/).filter(Boolean);
+}
+
+function getLastNameToken(normalizedName = '') {
+  const tokens = getNameTokens(normalizedName);
+  return tokens.length ? tokens[tokens.length - 1] : '';
+}
+
+function getFirstNameToken(normalizedName = '') {
+  const tokens = getNameTokens(normalizedName);
+  return tokens.length ? tokens[0] : '';
+}
+
+function getLevenshteinDistance(a = '', b = '') {
+  const left = String(a || '');
+  const right = String(b || '');
+  const rows = left.length + 1;
+  const cols = right.length + 1;
+  const matrix = Array.from({ length: rows }, () => Array(cols).fill(0));
+
+  for (let row = 0; row < rows; row += 1) matrix[row][0] = row;
+  for (let col = 0; col < cols; col += 1) matrix[0][col] = col;
+
+  for (let row = 1; row < rows; row += 1) {
+    for (let col = 1; col < cols; col += 1) {
+      const cost = left[row - 1] === right[col - 1] ? 0 : 1;
+      matrix[row][col] = Math.min(
+        matrix[row - 1][col] + 1,
+        matrix[row][col - 1] + 1,
+        matrix[row - 1][col - 1] + cost,
+      );
+    }
+  }
+
+  return matrix[left.length][right.length];
+}
+
+function getNameSimilarity(a = '', b = '') {
+  const left = String(a || '').trim();
+  const right = String(b || '').trim();
+  if (!left || !right) return 0;
+  if (left === right) return 1;
+  const maxLength = Math.max(left.length, right.length);
+  if (!maxLength) return 0;
+  return 1 - (getLevenshteinDistance(left, right) / maxLength);
+}
+
+function isEligibleFuzzyBaselineCandidate(identity, candidate) {
+  const nameScore = candidate.nameScore || 0;
+  if (nameScore < 0.8) return false;
+  if (nameScore >= 0.92) return true;
+
+  const baselineLastName = getLastNameToken(identity.normalizedName);
+  const candidateLastName = getLastNameToken(candidate.normalizedName);
+  if (!baselineLastName || !candidateLastName || baselineLastName !== candidateLastName) return false;
+
+  const firstNameScore = getNameSimilarity(
+    getFirstNameToken(identity.normalizedName),
+    getFirstNameToken(candidate.normalizedName),
+  );
+
+  // Avoid surname-only matches, but still surface strong spelling variants for review.
+  return nameScore >= 0.86 || firstNameScore >= 0.55;
 }
 
 function setAliasMatch(aliasMap, aliasKey, studentKey) {
@@ -137,6 +208,7 @@ function buildStudentEntry(identity) {
     'PB2 %': '',
     'Board %': '',
     _subjectSignature: identity.subjectSignature || { secondLanguage: '', optionalSubject: '', mathType: '' },
+    _baselineMatchQuality: 0,
   };
 }
 
@@ -170,6 +242,24 @@ function applyStageMetrics(entry, examStage, metrics) {
   const existingStageScore = parseFloat(getStageScore(entry, examStage));
   if (!Number.isFinite(existingStageScore)) {
     setStageScore(entry, examStage, metrics.examPercent);
+  }
+}
+
+function applyBaselineMetrics(entry, metrics, matchQuality = 0) {
+  if (metrics.class9Percent === null && metrics.targetPercent === null) return;
+
+  const currentQuality = Number.isFinite(entry._baselineMatchQuality) ? entry._baselineMatchQuality : 0;
+  const shouldOverwrite = matchQuality > currentQuality;
+
+  if (metrics.class9Percent !== null && (shouldOverwrite || !Number.isFinite(parseFloat(entry['Class 9 %'])))) {
+    entry['Class 9 %'] = metrics.class9Percent;
+  }
+  if (metrics.targetPercent !== null && (shouldOverwrite || !Number.isFinite(parseFloat(entry['Target %'])))) {
+    entry['Target %'] = metrics.targetPercent;
+  }
+
+  if (shouldOverwrite || currentQuality === 0) {
+    entry._baselineMatchQuality = Math.max(currentQuality, matchQuality);
   }
 }
 
@@ -339,10 +429,27 @@ function buildMasterCumulativeRows(students = []) {
   });
 }
 
-function buildWorkbookCumulativeSheet(sheetNames = [], sheets = {}) {
+function buildEmptyBaselineMatchReport() {
+  return {
+    matchedCount: 0,
+    unmatchedCount: 0,
+    rows: [],
+  };
+}
+
+function getBaselineConfidenceLabel(matchQuality = 0) {
+  if (matchQuality >= 2) return 'exact';
+  if (matchQuality === 1) return 'fuzzy';
+  return 'unmatched';
+}
+
+function buildWorkbookCumulativeResult(sheetNames = [], sheets = {}) {
   const students = new Map();
   const studentsByName = new Map();
+  const studentsBySectionAndName = new Map();
+  const studentsBySectionAndCompactName = new Map();
   const selectedSheetNames = getProcessingSheetNames(sheetNames, sheets);
+  const baselineMatchReport = buildEmptyBaselineMatchReport();
 
   function computeStudentIdentity(row, sheet = {}, sheetName = '', examStage = 'UNKNOWN') {
     const headers = sheet.headers || [];
@@ -355,13 +462,18 @@ function buildWorkbookCumulativeSheet(sheetNames = [], sheets = {}) {
     const normalizedRollNo = normalizeIdentifier(rollNo);
     const name = nameCol ? cleanStudentName(row[nameCol]) : '';
     const normalizedName = normalizeStudentName(name);
-    const section = String(sheet.meta?.sectionName || '').trim();
+    const compactName = buildCompactNameKey(normalizedName);
+    const section = resolveRowSection(row, headers, sheet.meta || {}, {
+      sheetName,
+      sourceFileName: sheet.meta?.examName || sheetName,
+    });
 
     return {
       enrollmentNo,
       rollNo,
       name,
       normalizedName,
+      compactName,
       section,
       examStage,
       enrollmentKey: normalizedEnrollmentNo ? `enrollment:${normalizedEnrollmentNo}` : '',
@@ -384,6 +496,23 @@ function buildWorkbookCumulativeSheet(sheetNames = [], sheets = {}) {
       studentsByName.set(identity.normalizedName, new Set());
     }
     studentsByName.get(identity.normalizedName).add(studentKey);
+
+    if (identity.section) {
+      const sectionKey = `${identity.section}::${identity.normalizedName}`;
+      if (!studentsBySectionAndName.has(sectionKey)) {
+        studentsBySectionAndName.set(sectionKey, new Set());
+      }
+      studentsBySectionAndName.get(sectionKey).add(studentKey);
+
+      if (identity.compactName) {
+        const compactSectionKey = `${identity.section}::${identity.compactName}`;
+        if (!studentsBySectionAndCompactName.has(compactSectionKey)) {
+          studentsBySectionAndCompactName.set(compactSectionKey, new Set());
+        }
+        studentsBySectionAndCompactName.get(compactSectionKey).add(studentKey);
+      }
+    }
+
   }
 
   function resolveUniqueStudentKeyByName(normalizedName) {
@@ -391,6 +520,188 @@ function buildWorkbookCumulativeSheet(sheetNames = [], sheets = {}) {
     const matches = studentsByName.get(normalizedName);
     if (!matches || matches.size !== 1) return null;
     return Array.from(matches)[0];
+  }
+
+  function resolveUniqueStudentKeyBySectionAndName(section, normalizedName) {
+    if (!section || !normalizedName) return null;
+    const sectionKey = `${section}::${normalizedName}`;
+    if (!studentsBySectionAndName.has(sectionKey)) return null;
+    const matches = studentsBySectionAndName.get(sectionKey);
+    if (!matches || matches.size !== 1) return null;
+    return Array.from(matches)[0];
+  }
+
+  function resolveUniqueStudentKeyBySectionAndCompactName(section, compactName) {
+    if (!section || !compactName) return null;
+    const compactSectionKey = `${section}::${compactName}`;
+    if (!studentsBySectionAndCompactName.has(compactSectionKey)) return null;
+    const matches = studentsBySectionAndCompactName.get(compactSectionKey);
+    if (!matches || matches.size !== 1) return null;
+    return Array.from(matches)[0];
+  }
+
+  function resolveStudentMatch(identity, examStage) {
+    if (identity.enrollmentKey && students.has(identity.enrollmentKey)) {
+      return {
+        studentKey: identity.enrollmentKey,
+        baselineMatchQuality: 3,
+        reason: 'Exact enrollment match',
+      };
+    }
+
+    const exactSectionMatch = resolveUniqueStudentKeyBySectionAndName(identity.section, identity.normalizedName);
+    if (exactSectionMatch) {
+      return {
+        studentKey: exactSectionMatch,
+        baselineMatchQuality: 2,
+        reason: 'Exact same-section name match',
+      };
+    }
+
+    const exactNameMatch = resolveUniqueStudentKeyByName(identity.normalizedName);
+    if (exactNameMatch) {
+      return {
+        studentKey: exactNameMatch,
+        baselineMatchQuality: 2,
+        reason: 'Exact unique-name match',
+      };
+    }
+
+    if (examStage === 'BASELINE') {
+      const compactSectionMatch = resolveUniqueStudentKeyBySectionAndCompactName(identity.section, identity.compactName);
+      if (compactSectionMatch) {
+        return {
+          studentKey: compactSectionMatch,
+          baselineMatchQuality: 2,
+          reason: 'Exact same-section compact-name match',
+        };
+      }
+    }
+
+    return {
+      studentKey: null,
+      baselineMatchQuality: 0,
+      reason: 'No safe roster match',
+    };
+  }
+
+  function getRosterCandidates(identity) {
+    const allCandidates = Array.from(students.entries())
+      .map(([studentKey, entry]) => {
+        const normalizedName = normalizeStudentName(entry['Student Name']);
+        return {
+          studentKey,
+          entry,
+          normalizedName,
+          section: String(entry.Section || '').trim(),
+        };
+      })
+      .filter((candidate) => {
+        if (!candidate.normalizedName || candidate.normalizedName === identity.normalizedName) return false;
+        const hasBaselineValues = Number.isFinite(parseFloat(candidate.entry['Class 9 %']))
+          || Number.isFinite(parseFloat(candidate.entry['Target %']));
+        return !hasBaselineValues;
+      });
+
+    const sameSectionCandidates = identity.section
+      ? allCandidates.filter((candidate) => candidate.section === identity.section)
+      : [];
+
+    return sameSectionCandidates.length
+      ? { candidates: sameSectionCandidates, scope: 'same-section' }
+      : { candidates: allCandidates, scope: 'global' };
+  }
+
+  function buildBaselineSuggestion(identity) {
+    if (!identity.normalizedName || students.size === 0) {
+      return {
+        confidence: 'unmatched',
+        reason: 'No candidate',
+      };
+    }
+
+    const { candidates, scope } = getRosterCandidates(identity);
+    if (!candidates.length) {
+      return {
+        confidence: 'unmatched',
+        reason: 'No candidate',
+      };
+    }
+
+    const ranked = candidates
+      .map((candidate) => ({
+        ...candidate,
+        nameScore: getNameSimilarity(identity.normalizedName, candidate.normalizedName),
+      }))
+      .filter((candidate) => isEligibleFuzzyBaselineCandidate(identity, candidate))
+      .sort((a, b) => b.nameScore - a.nameScore);
+
+    if (!ranked.length) {
+      return {
+        confidence: 'unmatched',
+        reason: 'No candidate',
+      };
+    }
+
+    const [best, second] = ranked;
+    if (second && (best.nameScore - second.nameScore) < 0.05) {
+      return {
+        confidence: 'unmatched',
+        reason: 'Ambiguous fuzzy candidates',
+        studentName: best.entry['Student Name'] || '',
+        enrollmentNo: best.entry['Enrollment No'] || '',
+        section: best.entry.Section || '',
+        studentKey: best.studentKey,
+        score: parseFloat(best.nameScore.toFixed(3)),
+      };
+    }
+
+    return {
+      confidence: 'fuzzy',
+      reason: scope === 'same-section' ? 'Same-section fuzzy suggestion' : 'Global fuzzy suggestion',
+      studentName: best.entry['Student Name'] || '',
+      enrollmentNo: best.entry['Enrollment No'] || '',
+      section: best.entry.Section || '',
+      studentKey: best.studentKey,
+      score: parseFloat(best.nameScore.toFixed(3)),
+    };
+  }
+
+  function recordBaselineMatch(identity, metrics, resolution) {
+    const matchedConfidence = getBaselineConfidenceLabel(resolution.baselineMatchQuality);
+    const matchedEntry = resolution.studentKey ? students.get(resolution.studentKey) : null;
+    const suggestion = matchedEntry
+      ? {
+        studentName: matchedEntry['Student Name'] || '',
+        enrollmentNo: matchedEntry['Enrollment No'] || '',
+        section: matchedEntry.Section || '',
+        studentKey: resolution.studentKey,
+        confidence: matchedConfidence,
+        reason: resolution.reason || '',
+      }
+      : buildBaselineSuggestion(identity);
+    const confidence = resolution.studentKey ? matchedConfidence : suggestion?.confidence || 'unmatched';
+
+    baselineMatchReport.rows.push({
+      baselineStudentName: identity.name || '',
+      baselineEnrollmentNo: identity.enrollmentNo || '',
+      section: identity.section || '',
+      baselineClass9Percent: metrics.class9Percent,
+      baselineTargetPercent: metrics.targetPercent,
+      reason: resolution.studentKey ? resolution.reason || '' : suggestion?.reason || resolution.reason || '',
+      suggestedStudentName: suggestion?.studentName || '',
+      suggestedEnrollmentNo: suggestion?.enrollmentNo || '',
+      suggestedSection: suggestion?.section || '',
+      suggestedStudentKey: suggestion?.studentKey || '',
+      suggestionScore: suggestion?.score ?? '',
+      confidence,
+    });
+
+    if (resolution.studentKey) {
+      baselineMatchReport.matchedCount += 1;
+    } else {
+      baselineMatchReport.unmatchedCount += 1;
+    }
   }
 
   const anchorSheetNames = selectedSheetNames.filter((sheetName) => {
@@ -443,31 +754,6 @@ function buildWorkbookCumulativeSheet(sheetNames = [], sheets = {}) {
     });
   }
 
-  function getSheetMatchCoverage(sheetName) {
-    const sheet = sheets[sheetName];
-    if (!sheet?.rows?.length) return 0;
-
-    const headers = sheet.headers || [];
-    const examStage = detectExamStage(sheet.meta?.examName || sheetName, headers);
-    let matchedRows = 0;
-    let namedRows = 0;
-
-    sheet.rows.forEach((row) => {
-      const identity = computeStudentIdentity(row, sheet, sheetName, examStage);
-      if (!identity.normalizedName) return;
-      namedRows += 1;
-      if (identity.enrollmentKey && students.has(identity.enrollmentKey)) {
-        matchedRows += 1;
-        return;
-      }
-      if (resolveUniqueStudentKeyByName(identity.normalizedName)) {
-        matchedRows += 1;
-      }
-    });
-
-    return namedRows > 0 ? matchedRows / namedRows : 0;
-  }
-
   selectedSheetNames.forEach((sheetName) => {
     const sheet = sheets[sheetName];
     if (!sheet?.rows?.length) return;
@@ -475,19 +761,24 @@ function buildWorkbookCumulativeSheet(sheetNames = [], sheets = {}) {
     const headers = sheet.headers || [];
     const examStage = detectExamStage(sheet.meta?.examName || sheetName, headers);
     if (examStage === 'BOARD') return;
-    if (examStage === 'BASELINE' && !allowFallbackRoster && getSheetMatchCoverage(sheetName) < 0.5) return;
 
     sheet.rows.forEach((row) => {
       const identity = computeStudentIdentity(row, sheet, sheetName, examStage);
       const metrics = extractStudentMetrics(row, headers, sheet.meta?.examName || sheetName);
-      const studentKey = identity.enrollmentKey && students.has(identity.enrollmentKey)
-        ? identity.enrollmentKey
-        : resolveUniqueStudentKeyByName(identity.normalizedName);
+      const resolution = resolveStudentMatch(identity, examStage);
+      const { studentKey, baselineMatchQuality } = resolution;
+      if (examStage === 'BASELINE') {
+        recordBaselineMatch(identity, metrics, resolution);
+      }
       if (!studentKey) return;
 
       const existing = getOrCreateStudent(studentKey, identity);
       registerStudentName(studentKey, identity);
-      applyStageMetrics(existing, examStage, metrics);
+      if (examStage === 'BASELINE') {
+        applyBaselineMetrics(existing, metrics, baselineMatchQuality);
+      } else {
+        applyStageMetrics(existing, examStage, metrics);
+      }
       students.set(studentKey, existing);
     });
   });
@@ -628,8 +919,14 @@ function buildWorkbookCumulativeSheet(sheetNames = [], sheets = {}) {
     return enrollA.localeCompare(enrollB, undefined, { numeric: true, sensitivity: 'base' });
   });
 
-  if (rows.length === 0) return null;
-  return { headers, rows };
+  return {
+    masterCumulativeSheet: rows.length === 0 ? null : { headers, rows },
+    baselineMatchReport,
+  };
+}
+
+function buildWorkbookCumulativeSheet(sheetNames = [], sheets = {}) {
+  return buildWorkbookCumulativeResult(sheetNames, sheets).masterCumulativeSheet;
 }
 
 function buildCumulativeReportPayload({ uploads = [], sheets = [], students = [] }) {
@@ -753,6 +1050,7 @@ module.exports = {
   average,
   buildPerformanceStatus,
   buildMasterCumulativeRows,
+  buildWorkbookCumulativeResult,
   buildWorkbookCumulativeSheet,
   buildCumulativeReportPayload,
 };

@@ -65,16 +65,33 @@ function findAdmissionColumn(headers) {
   }) || null;
 }
 
+function toSafeNumber(value) {
+  const num = parseFloat(value);
+  return Number.isFinite(num) ? num : null;
+}
+
 function findClass9Column(headers) {
   return headers.find(h => {
-    const lower = h.toLowerCase();
-    return (lower.includes('% in ix') || lower.includes('ix %') || lower.includes('class 9') || lower.includes('ix percent') || lower.includes('ix marks') || lower.includes('9th %')) &&
-      !lower.includes('+30') && !lower.includes('target');
+    const lower = String(h || '').toLowerCase();
+    const isBaseline = (
+      lower.includes('% in ix') || 
+      lower.includes('ix %') || 
+      lower.includes('class 9') || 
+      lower.includes('9th class') || 
+      lower.includes('ix percent') || 
+      lower.includes('ix marks') || 
+      lower.includes('baseline') ||
+      (lower.includes('9th') && (lower.includes('%') || lower.includes('percentage')))
+    );
+    return isBaseline && !lower.includes('+30') && !lower.includes('target');
   }) || null;
 }
 
 function findTarget100Column(headers) {
-  const priorities = ['% in IX+30', 'X Target', 'Target', 'Class X Target', 'Target %', 'Target Percentage'];
+  const priorities = [
+    '% in IX+30', 'X Target', 'Target', 'Class X Target', 'Target %', 
+    'Target Percentage', 'IX+30', 'IX + 30', 'IX +30', 'IX+ 30'
+  ];
   for (const col of priorities) {
     const found = headers.find((h) => {
       if (!h) return false;
@@ -85,8 +102,8 @@ function findTarget100Column(headers) {
   }
   return headers.find(h => {
     const lower = String(h || '').toLowerCase();
-    const hasTarget = lower.includes('target') || lower.includes('+30');
-    const isIxBaselineOnly = lower.includes('ix') && !lower.includes('+30');
+    const hasTarget = lower.includes('target') || lower.includes('+30') || lower.includes('+ 30');
+    const isIxBaselineOnly = (lower.includes('ix') || lower.includes('9th')) && !lower.includes('+30') && !lower.includes('+ 30');
     return hasTarget && !isIxBaselineOnly;
   }) || null;
 }
@@ -208,8 +225,8 @@ function detectHeaderRowIndex(matrix = []) {
     );
     const hasPercent = normalized.some((cell) => cell === '%' || cell === 'percentage' || cell.includes('%') || cell.includes('percent'));
     const hasGrandTotal = normalized.some((cell) => cell.includes('grand total') || cell === 'total');
-    const hasBaseline = normalized.some((cell) => (cell.includes('ix') || cell.includes('9th') || cell.includes('class 9')) && !cell.includes('target'));
-    const hasTarget = normalized.some((cell) => cell.includes('target') || cell.includes('+30'));
+    const hasBaseline = normalized.some((cell) => (cell.includes('ix') || cell.includes('9th') || cell.includes('class 9')) && !cell.includes('target') && !cell.includes('+30'));
+    const hasTarget = normalized.some((cell) => (cell.includes('target') || cell.includes('+30')) && !((cell.includes('ix') || cell.includes('9th')) && !cell.includes('+30')));
     const marksHeaders = countMarksLikeHeaders(row);
 
     let score = 0;
@@ -442,12 +459,16 @@ function buildClass10CumulativeSheet(sheetNames, sheets) {
 
       const class9 = metrics.class9Percent;
       const target = metrics.targetPercent;
-      if (class9 !== null && toSafeNumber(existing['Class 9 %']) === null) existing['Class 9 %'] = class9;
-      if (target !== null && toSafeNumber(existing['Target %']) === null) existing['Target %'] = target;
+      if (class9 !== null && (toSafeNumber(existing['Class 9 %']) === null || existing['Class 9 %'] === '')) {
+        existing['Class 9 %'] = class9;
+      }
+      if (target !== null && (toSafeNumber(existing['Target %']) === null || existing['Target %'] === '')) {
+        existing['Target %'] = target;
+      }
 
       if (examStage !== 'BASELINE' && examStage !== 'UNKNOWN') {
         const examPercent = metrics.examPercent;
-        if (examPercent !== null && toSafeNumber(getStageScore(existing, examStage)) === null) {
+        if (examPercent !== null && (toSafeNumber(getStageScore(existing, examStage)) === null || getStageScore(existing, examStage) === '')) {
           setStageScore(existing, examStage, examPercent);
         }
       }
@@ -554,6 +575,72 @@ function mergeImportedCumulativeSheet(importedSheet, fallbackSheet) {
     ...importedSheet,
     headers: importedSheet.headers?.length ? importedSheet.headers : fallbackSheet.headers,
     rows,
+  };
+}
+
+function recalculateCumulativeDerivedFields(row = {}) {
+  const board = toSafeNumber(row['Board %']);
+  const pb2 = toSafeNumber(row['PB2 %']);
+  const pb1 = toSafeNumber(row['PB1 %']);
+  const hy = toSafeNumber(row['HY %']);
+  const latest = board !== null ? board : pb2 !== null ? pb2 : pb1 !== null ? pb1 : hy !== null ? hy : null;
+  const target = toSafeNumber(row['Target %']);
+  const class9 = toSafeNumber(row['Class 9 %']);
+  const targetGap = latest !== null && target !== null ? parseFloat((latest - target).toFixed(2)) : '';
+  const improvement = latest !== null && class9 !== null ? parseFloat((latest - class9).toFixed(2)) : '';
+  let status = 'Needs Review';
+  if (latest !== null && target !== null && latest >= target) status = 'Achieved Target';
+  else if (latest !== null && target !== null && class9 !== null && latest > class9) status = 'Improving Toward Target';
+  else if (latest !== null && class9 !== null && latest > class9) status = 'Improved';
+  else if (latest !== null && target !== null) status = 'Below Target';
+
+  return {
+    ...row,
+    'Target Gap': targetGap,
+    Improvement: improvement,
+    Status: status,
+  };
+}
+
+function buildCumulativeRowOptionKey(row = {}, index = 0) {
+  return buildCumulativeRowLookupKey(row) || `row:${index}`;
+}
+
+function buildBaselineReportRowKey(row = {}, index = 0) {
+  const enrollment = normalizeIdentifier(row.baselineEnrollmentNo);
+  const name = normalizeStudentName(row.baselineStudentName);
+  const section = String(row.section || '').trim().toLowerCase();
+  return `${enrollment || 'no-enrollment'}|${name || 'no-name'}|${section || 'no-section'}|${index}`;
+}
+
+function buildEmptySectionFileMap() {
+  return Object.fromEntries(CLASS10_SECTIONS.map((section) => [section, null]));
+}
+
+function createEmptySectionWiseStructuredUpload() {
+  return {
+    baseline: null,
+    hy: buildEmptySectionFileMap(),
+    pb1: buildEmptySectionFileMap(),
+    pb2: buildEmptySectionFileMap(),
+    board: null,
+  };
+}
+
+function createEmptyMergedStructuredUpload() {
+  return {
+    baseline: null,
+    hy: null,
+    pb1: null,
+    pb2: null,
+    board: null,
+  };
+}
+
+function createStructuredUploadState() {
+  return {
+    sectionWise: createEmptySectionWiseStructuredUpload(),
+    merged: createEmptyMergedStructuredUpload(),
   };
 }
 
@@ -921,13 +1008,9 @@ export default function App() {
   const [cumulativeData, setCumulativeData] = useState(null);
   const [cumulativeLoading, setCumulativeLoading] = useState(false);
   const [importIssues, setImportIssues] = useState([]);
-  const [structuredUpload, setStructuredUpload] = useState({
-    baseline: null,
-    hy: { A: null, B: null, C: null, D: null, E: null },
-    pb1: { A: null, B: null, C: null, D: null, E: null },
-    pb2: { A: null, B: null, C: null, D: null, E: null },
-    board: null,
-  });
+  const [baselineMatchReport, setBaselineMatchReport] = useState(null);
+  const [structuredWorkflowMode, setStructuredWorkflowMode] = useState('merged');
+  const [structuredUpload, setStructuredUpload] = useState(createStructuredUploadState);
   const fileRef = useRef(null);
   const importMoreRef = useRef(null);
   const pdfReportRef = useRef(null);
@@ -963,6 +1046,9 @@ export default function App() {
           if (session.importedCumulativeSheet) {
             setImportedCumulativeSheet(mergeImportedCumulativeSheet(session.importedCumulativeSheet, rebuiltCumulativeSheet));
           }
+          if (session.baselineMatchReport) {
+            setBaselineMatchReport(session.baselineMatchReport);
+          }
           setScreen('dashboard');
           setTimeout(() => addToast('✅ Previous session restored!', 'success'), 500);
         } else if (session.version !== SESSION_VERSION) {
@@ -979,14 +1065,24 @@ export default function App() {
     if (screen !== 'dashboard' && screen !== 'progress' || sheetNames.length === 0) return;
     const timer = setTimeout(() => {
       try {
-        const session = { version: SESSION_VERSION, fileName, sheetNames, sheets, activeSheet, analysisSheets, examTimeline, importedCumulativeSheet };
+        const session = {
+          version: SESSION_VERSION,
+          fileName,
+          sheetNames,
+          sheets,
+          activeSheet,
+          analysisSheets,
+          examTimeline,
+          importedCumulativeSheet,
+          baselineMatchReport,
+        };
         localStorage.setItem(SESSION_STORAGE_KEY, JSON.stringify(session));
       } catch (e) {
         console.warn('Session save failed:', e.message);
       }
     }, 1000);
     return () => clearTimeout(timer);
-  }, [sheets, sheetNames, activeSheet, fileName, analysisSheets, screen, examTimeline, importedCumulativeSheet]);
+  }, [sheets, sheetNames, activeSheet, fileName, analysisSheets, screen, examTimeline, importedCumulativeSheet, baselineMatchReport]);
 
   const fetchCumulativeData = useCallback(async () => {
     setCumulativeLoading(true);
@@ -1037,42 +1133,72 @@ export default function App() {
 
   const normalizeImportedSheet = useCallback((sheetData) => normalizeSheetForApp(sheetData), []);
 
-  const setStructuredFile = useCallback((group, section, file) => {
+  const setStructuredFile = useCallback((mode, group, section, file) => {
     setStructuredUpload(prev => {
-      if (group === 'baseline' || group === 'board') return { ...prev, [group]: file || null };
+      const currentModeState = prev[mode];
+      if (!currentModeState) return prev;
+      if (mode === 'merged' || group === 'baseline' || group === 'board') {
+        return {
+          ...prev,
+          [mode]: {
+            ...currentModeState,
+            [group]: file || null,
+          },
+        };
+      }
       return {
         ...prev,
-        [group]: {
-          ...prev[group],
-          [section]: file || null,
+        [mode]: {
+          ...currentModeState,
+          [group]: {
+            ...currentModeState[group],
+            [section]: file || null,
+          },
         },
       };
     });
   }, []);
 
-  const buildStructuredFiles = useCallback(() => {
+  const buildStructuredFiles = useCallback((mode = structuredWorkflowMode) => {
+    const upload = structuredUpload[mode];
     const prepared = [];
-    if (structuredUpload.baseline) {
-      const file = structuredUpload.baseline;
+    if (!upload) return prepared;
+
+    if (upload.baseline) {
+      const file = upload.baseline;
       prepared.push(new File([file], `BASELINE_CLASS10_${file.name}`, { type: file.type }));
     }
-    [
-      ['hy', 'HY'],
-      ['pb1', 'PB1'],
-      ['pb2', 'PB2'],
-    ].forEach(([key, label]) => {
-      CLASS10_SECTIONS.forEach((section) => {
-        const file = structuredUpload[key][section];
+
+    if (mode === 'merged') {
+      [
+        ['hy', 'HY'],
+        ['pb1', 'PB1'],
+        ['pb2', 'PB2'],
+      ].forEach(([key, label]) => {
+        const file = upload[key];
         if (!file) return;
-        prepared.push(new File([file], `${label}_10${section}_${file.name}`, { type: file.type }));
+        prepared.push(new File([file], `${label}_CLASS10_MERGED_${file.name}`, { type: file.type }));
       });
-    });
-    if (structuredUpload.board) {
-      const file = structuredUpload.board;
+    } else {
+      [
+        ['hy', 'HY'],
+        ['pb1', 'PB1'],
+        ['pb2', 'PB2'],
+      ].forEach(([key, label]) => {
+        CLASS10_SECTIONS.forEach((section) => {
+          const file = upload[key][section];
+          if (!file) return;
+          prepared.push(new File([file], `${label}_10${section}_${file.name}`, { type: file.type }));
+        });
+      });
+    }
+
+    if (upload.board) {
+      const file = upload.board;
       prepared.push(new File([file], `BOARD_CLASS10_${file.name}`, { type: file.type }));
     }
     return prepared;
-  }, [structuredUpload]);
+  }, [structuredUpload, structuredWorkflowMode]);
 
   const persistFilesToDatabase = useCallback(async (files) => {
     if (!dbEnabled || !files?.length) return;
@@ -1107,6 +1233,7 @@ export default function App() {
     setLoading(true);
     setImportIssues([]);
     setImportedCumulativeSheet(null);
+    setBaselineMatchReport(null);
 
     try {
       const usedNames = new Set();
@@ -1185,20 +1312,24 @@ export default function App() {
   }, [API, addToast, buildUniqueSheetName, normalizeImportedSheet]);
 
   const handleStructuredSubmit = useCallback(async () => {
-    const files = buildStructuredFiles();
-    const hasBaseline = Boolean(structuredUpload.baseline);
-    const hasExamFile = Boolean(
-      structuredUpload.board ||
-      CLASS10_SECTIONS.some((section) => structuredUpload.hy[section] || structuredUpload.pb1[section] || structuredUpload.pb2[section])
+    const currentUpload = structuredUpload[structuredWorkflowMode];
+    const files = buildStructuredFiles(structuredWorkflowMode);
+    const hasAllRequiredFiles = Boolean(
+      currentUpload?.baseline
+      && currentUpload?.hy
+      && currentUpload?.pb1
+      && currentUpload?.pb2
+      && currentUpload?.board
     );
 
-    if (!hasBaseline || !hasExamFile) {
-      addToast('Please add the Class 9 + Target baseline file and at least one exam file before importing.', 'error');
+    if (!hasAllRequiredFiles || files.length !== 5) {
+      addToast('Please add exactly 5 files before importing: Baseline, HY, PB1, PB2, and Board.', 'error');
       return;
     }
 
     setLoading(true);
     setImportIssues([]);
+    setBaselineMatchReport(null);
 
     try {
       const formData = new FormData();
@@ -1214,34 +1345,43 @@ export default function App() {
         throw new Error(data.error || 'Structured import failed');
       }
 
+      const validationIssues = Array.isArray(data.issues)
+        ? data.issues.map((issue) => `${issue.fileName} / ${issue.sheetName}: ${issue.message}`)
+        : [];
+      if (validationIssues.length > 0) {
+        setImportIssues(validationIssues);
+        addToast('Structured import blocked. Please fix the sheet structure issues shown above.', 'error', 6000);
+        return;
+      }
+
       const normalizedSheets = Object.fromEntries(
         Object.entries(data.sheets || {}).map(([name, sheet]) => [name, normalizeImportedSheet(sheet)])
       );
       const rebuiltCumulativeSheet = buildClass10CumulativeSheet(data.sheetNames || [], normalizedSheets);
       const mergedCumulativeSheet = mergeImportedCumulativeSheet(data.masterCumulativeSheet || null, rebuiltCumulativeSheet);
+      const nextBaselineMatchReport = data.baselineMatchReport || null;
 
       setFileName(`${files.length} structured file${files.length > 1 ? 's' : ''} loaded`);
       setSheetNames(data.sheetNames || []);
       setSheets(normalizedSheets);
       setImportedCumulativeSheet(mergedCumulativeSheet);
+      setBaselineMatchReport(nextBaselineMatchReport);
       setActiveSheet(CUMULATIVE_SHEET_NAME);
       setAnalysisSheets((data.sheetNames || []).slice());
       setScreen('dashboard');
-      setStructuredUpload({
-        baseline: null,
-        hy: { A: null, B: null, C: null, D: null, E: null },
-        pb1: { A: null, B: null, C: null, D: null, E: null },
-        pb2: { A: null, B: null, C: null, D: null, E: null },
-        board: null,
-      });
-      addToast('Structured import completed without database dependency.', 'success');
+      setStructuredUpload(createStructuredUploadState());
+      if ((nextBaselineMatchReport?.unmatchedCount || 0) > 0) {
+        addToast(`Structured import completed with ${nextBaselineMatchReport.unmatchedCount} unmatched baseline row${nextBaselineMatchReport.unmatchedCount > 1 ? 's' : ''}.`, 'warning', 6000);
+      } else {
+        addToast('Structured import completed without database dependency.', 'success');
+      }
     } catch (err) {
       console.error('Structured import error:', err);
       addToast(err.message || 'Structured import failed', 'error');
     } finally {
       setLoading(false);
     }
-  }, [API, addToast, buildStructuredFiles, structuredUpload]);
+  }, [API, addToast, buildStructuredFiles, structuredUpload, structuredWorkflowMode]);
 
   // ---------- EDIT CELLS ----------
   const startEdit = (sheetName, rowIdx, col) => {
@@ -1587,6 +1727,9 @@ export default function App() {
     setHistoryIndex(-1);
     setSortConfig({ key: null, direction: null });
     setImportedCumulativeSheet(null);
+    setBaselineMatchReport(null);
+    setStructuredUpload(createStructuredUploadState());
+    setStructuredWorkflowMode('merged');
     try { localStorage.removeItem('report-generator-session'); } catch (e) { /* ignore */ }
     addToast('All data cleared', 'info', 2000);
   };
@@ -1600,6 +1743,81 @@ export default function App() {
     () => mergeImportedCumulativeSheet(importedCumulativeSheet, rebuiltCumulativeSheet),
     [importedCumulativeSheet, rebuiltCumulativeSheet]
   );
+  const cumulativeStudentOptions = useMemo(
+    () => (cumulativeSheet?.rows || []).map((row, index) => ({
+      key: buildCumulativeRowOptionKey(row, index),
+      enrollmentNo: row['Enrollment No'] || '',
+      studentName: row['Student Name'] || '',
+      section: row.Section || '',
+      hasBaselineValues: !isMissingProjectedValue(row['Class 9 %']) || !isMissingProjectedValue(row['Target %']),
+    })),
+    [cumulativeSheet]
+  );
+  const applyBaselineMapping = useCallback((reportRow, targetKey, mode = 'manual') => {
+    if (!cumulativeSheet?.rows?.length || !targetKey) {
+      addToast('Select a cumulative student before applying the baseline values.', 'error');
+      return;
+    }
+
+    const baselineClass9 = reportRow.baselineClass9Percent;
+    const baselineTarget = reportRow.baselineTargetPercent;
+    if (isMissingProjectedValue(baselineClass9) && isMissingProjectedValue(baselineTarget)) {
+      addToast('This baseline row has no Class IX or Target value to apply.', 'error');
+      return;
+    }
+
+    const targetIndex = cumulativeSheet.rows.findIndex((row, index) => buildCumulativeRowOptionKey(row, index) === targetKey);
+    if (targetIndex < 0) {
+      addToast('Selected cumulative student was not found.', 'error');
+      return;
+    }
+
+    const targetRow = cumulativeSheet.rows[targetIndex];
+    if (!isMissingProjectedValue(targetRow['Class 9 %']) || !isMissingProjectedValue(targetRow['Target %'])) {
+      addToast('Selected student already has Class IX / Target values. Exact matches are not overwritten.', 'warning', 6000);
+      return;
+    }
+
+    const nextRows = cumulativeSheet.rows.map((row, index) => {
+      if (index !== targetIndex) return row;
+      return recalculateCumulativeDerivedFields({
+        ...row,
+        'Class 9 %': isMissingProjectedValue(baselineClass9) ? row['Class 9 %'] : baselineClass9,
+        'Target %': isMissingProjectedValue(baselineTarget) ? row['Target %'] : baselineTarget,
+      });
+    });
+    const nextSheet = { ...cumulativeSheet, rows: nextRows };
+    const nextTargetRow = nextRows[targetIndex];
+
+    setImportedCumulativeSheet(nextSheet);
+    setBaselineMatchReport((currentReport) => {
+      if (!currentReport?.rows?.length) return currentReport;
+      let changed = false;
+      const rows = currentReport.rows.map((row, index) => {
+        if (buildBaselineReportRowKey(row, index) !== buildBaselineReportRowKey(reportRow, reportRow._reportIndex ?? index)) return row;
+        changed = true;
+        return {
+          ...row,
+          confidence: 'exact',
+          reason: mode === 'suggested' ? 'Approved suggested baseline mapping' : 'Approved manual baseline mapping',
+          suggestedStudentName: nextTargetRow['Student Name'] || '',
+          suggestedEnrollmentNo: nextTargetRow['Enrollment No'] || '',
+          suggestedSection: nextTargetRow.Section || '',
+          suggestedStudentKey: buildCumulativeRowOptionKey(nextTargetRow, targetIndex),
+          suggestionScore: row.suggestionScore || '',
+        };
+      });
+      if (!changed) return currentReport;
+      return {
+        ...currentReport,
+        matchedCount: (currentReport.matchedCount || 0) + 1,
+        unmatchedCount: Math.max(0, (currentReport.unmatchedCount || 0) - 1),
+        rows,
+      };
+    });
+    setActiveSheet(CUMULATIVE_SHEET_NAME);
+    addToast('Baseline Class IX / Target values applied to the cumulative sheet.', 'success');
+  }, [addToast, cumulativeSheet]);
   const displaySheetNames = useMemo(
     () => {
       if (PHASE_ONE_CUMULATIVE_ONLY) {
@@ -1760,7 +1978,7 @@ export default function App() {
         <div className="main-card fade-in upload-card">
           <div className="card-icon"><FileSpreadsheet size={48} strokeWidth={1.5} /></div>
           <h1>Target Analysis Report Generator</h1>
-          <p className="subtitle">Use the structured form below to place each sheet in the correct exam slot before import, so the cumulative sheet is built from validated Class 10 data only.</p>
+          <p className="subtitle">Import exactly 5 files only: Class 9 + Target, HY, PB1, PB2, and Board. Each exam file can be a workbook with section tabs or one combined sheet for all sections.</p>
           {importIssues.length > 0 && (
             <div style={{ marginBottom: '1rem', border: '1px solid rgba(239,68,68,0.18)', background: 'rgba(254,242,242,0.95)', borderRadius: '18px', padding: '1rem 1.1rem', textAlign: 'left' }}>
               <div style={{ fontWeight: 700, color: '#991b1b', marginBottom: '0.5rem' }}>Import blocked due to sheet validation errors</div>
@@ -1770,30 +1988,15 @@ export default function App() {
               </div>
             </div>
           )}
-          <div className="upload-shell" style={PHASE_ONE_CUMULATIVE_ONLY ? { gridTemplateColumns: '1fr', maxWidth: '980px', margin: '0 auto' } : undefined}>
+          <div className="upload-shell" style={{ gridTemplateColumns: '1fr', maxWidth: '980px', margin: '0 auto' }}>
             <StructuredUploadPanel
               loading={loading}
+              workflowMode={structuredWorkflowMode}
+              setWorkflowMode={setStructuredWorkflowMode}
               structuredUpload={structuredUpload}
               setStructuredFile={setStructuredFile}
               onSubmit={handleStructuredSubmit}
             />
-
-            {!PHASE_ONE_CUMULATIVE_ONLY && <div className="landing-actions quick-actions-panel" style={{ marginTop: 0 }}>
-              <div className="drop-zone" onDragOver={e => e.preventDefault()} onDrop={e => { e.preventDefault(); handleFiles(e.dataTransfer.files); }} onClick={() => fileRef.current?.click()}>
-                <input ref={fileRef} type="file" multiple accept=".xls,.xlsx,.csv" style={{ display: 'none' }} onChange={e => handleFiles(e.target.files)} />
-                {loading ? (
-                  <div className="drop-content"><Loader2 size={40} className="spin" /><p>Parsing file...</p></div>
-                ) : (
-                  <div className="drop-content"><Upload size={40} /><p><strong>Quick upload</strong> for already well-named files</p><span className="drop-hint">.xls, .xlsx and .csv files supported</span></div>
-                )}
-              </div>
-
-              <div className="divider"><span>OR</span></div>
-
-              <button className="btn-primary create-btn" onClick={() => setShowCreateModal(true)}>
-                <Plus size={20} /> Create New Template
-              </button>
-            </div>}
           </div>
           <div className="info-bar"><Info size={16} /><span>Phase 1 focuses only on a validated cumulative sheet. Exports, graphs, and advanced reports stay hidden until cumulative accuracy is stable.</span></div>
         </div>
@@ -1927,6 +2130,14 @@ export default function App() {
                     </button>
                   </div>
                 </div>
+              )}
+
+              {(baselineMatchReport?.unmatchedCount || 0) > 0 && (
+                <BaselineMatchWarningPanel
+                  report={baselineMatchReport}
+                  studentOptions={cumulativeStudentOptions}
+                  onApplyMapping={applyBaselineMapping}
+                />
               )}
 
               {classStats && (
@@ -2111,33 +2322,200 @@ export default function App() {
   );
 }
 
-function StructuredUploadPanel({ loading, structuredUpload, setStructuredFile, onSubmit }) {
-  const sectionInput = (groupKey, label, section) => {
-    const file = structuredUpload[groupKey]?.[section] || null;
+function BaselineMatchWarningPanel({ report, studentOptions = [], onApplyMapping }) {
+  const reviewRows = (report?.rows || [])
+    .map((row, index) => ({ ...row, _reportIndex: index }))
+    .filter((row) => row.confidence !== 'exact');
+  const suggestedRows = reviewRows.filter((row) => row.confidence === 'fuzzy');
+  const [manualTargets, setManualTargets] = useState({});
+
+  const getSuggestedTargetKey = (row) => {
+    if (row.suggestedStudentKey && studentOptions.some((student) => student.key === row.suggestedStudentKey)) {
+      return row.suggestedStudentKey;
+    }
+    const enrollment = normalizeIdentifier(row.suggestedEnrollmentNo);
+    if (enrollment) return `enrollment:${enrollment}`;
+    const normalizedName = normalizeStudentName(row.suggestedStudentName);
+    const normalizedSection = String(row.suggestedSection || '').trim().toLowerCase();
+    if (normalizedName && normalizedSection) return `name-section:${normalizedName}|${normalizedSection}`;
+    if (normalizedName) return `name:${normalizedName}`;
+    return '';
+  };
+
+  const formatBaselineValue = (value) => isMissingProjectedValue(value) ? '—' : value;
+
+  const exportCsv = () => {
+    if (!reviewRows.length) return;
+
+    const toCsvCell = (value) => `"${String(value ?? '').replace(/"/g, '""')}"`;
+    const lines = [
+      ['Baseline Student Name', 'Baseline Enrollment No', 'Section', 'Class 9 %', 'Target %', 'Reason', 'Suggested Student Name', 'Suggested Enrollment No', 'Suggested Section', 'Suggestion Score', 'Confidence'],
+      ...reviewRows.map((row) => [
+        row.baselineStudentName,
+        row.baselineEnrollmentNo,
+        row.section,
+        row.baselineClass9Percent,
+        row.baselineTargetPercent,
+        row.reason,
+        row.suggestedStudentName,
+        row.suggestedEnrollmentNo,
+        row.suggestedSection,
+        row.suggestionScore,
+        row.confidence,
+      ]),
+    ];
+    const csv = lines.map((line) => line.map(toCsvCell).join(',')).join('\n');
+    const blob = new Blob([csv], { type: 'text/csv;charset=utf-8;' });
+    const link = document.createElement('a');
+    link.href = URL.createObjectURL(blob);
+    link.download = 'baseline-mismatch-report.csv';
+    link.click();
+    URL.revokeObjectURL(link.href);
+  };
+
+  if (!reviewRows.length) return null;
+
+  return (
+    <div className="baseline-review-panel">
+      <div className="baseline-review-head">
+        <div>
+          <h3>Baseline rows need review</h3>
+          <p>
+            Matched {report?.matchedCount || 0} baseline rows automatically. {reviewRows.length} row{reviewRows.length > 1 ? 's' : ''} still need approval or manual mapping.
+          </p>
+          <div className="baseline-review-stats">
+            <span>{suggestedRows.length} suggested</span>
+            <span>{reviewRows.length - suggestedRows.length} without safe suggestion</span>
+          </div>
+        </div>
+        <button className="tool-btn outline" onClick={exportCsv}>
+          <Download size={16} /> Export review CSV
+        </button>
+      </div>
+
+      <div className="baseline-review-table-wrap">
+        <table className="data-table">
+          <thead>
+            <tr>
+              <th>Baseline Student</th>
+              <th>Class IX / Target</th>
+              <th>Section</th>
+              <th>Suggested Match</th>
+              <th>Manual Match</th>
+              <th>Action</th>
+            </tr>
+          </thead>
+          <tbody>
+            {reviewRows.slice(0, 25).map((row, index) => {
+              const rowKey = buildBaselineReportRowKey(row, row._reportIndex);
+              const suggestedTargetKey = getSuggestedTargetKey(row);
+              const suggestedOption = studentOptions.find((student) => student.key === suggestedTargetKey);
+              const selectedTargetKey = manualTargets[rowKey] || '';
+              const canApplySuggestion = row.confidence === 'fuzzy' && suggestedTargetKey && !suggestedOption?.hasBaselineValues;
+
+              return (
+                <tr key={rowKey}>
+                  <td>
+                    <strong>{row.baselineStudentName || '—'}</strong>
+                    <span className="baseline-review-sub">{row.baselineEnrollmentNo || 'No enrollment'}</span>
+                  </td>
+                  <td>
+                    <strong>{formatBaselineValue(row.baselineClass9Percent)} / {formatBaselineValue(row.baselineTargetPercent)}</strong>
+                    <span className="baseline-review-sub">Class IX / Target</span>
+                  </td>
+                <td>{row.section || '—'}</td>
+                  <td>
+                    {row.suggestedStudentName ? (
+                      <>
+                        <strong>{row.suggestedStudentName}</strong>
+                        <span className="baseline-review-sub">
+                          {[row.suggestedEnrollmentNo, row.suggestedSection ? `Sec ${row.suggestedSection}` : '', row.suggestionScore ? `${Math.round(Number(row.suggestionScore) * 100)}%` : '']
+                            .filter(Boolean)
+                            .join(' • ')}
+                        </span>
+                        {suggestedOption?.hasBaselineValues && <span className="baseline-review-sub">Already has exact baseline values</span>}
+                      </>
+                    ) : (
+                      <span className="baseline-review-sub">No safe candidate</span>
+                    )}
+                    <span className={`baseline-review-chip ${row.confidence === 'fuzzy' ? 'suggested' : ''}`}>{row.reason || row.confidence}</span>
+                  </td>
+                  <td>
+                    <select
+                      className="baseline-review-select"
+                      value={selectedTargetKey}
+                      onChange={(event) => setManualTargets((prev) => ({ ...prev, [rowKey]: event.target.value }))}
+                    >
+                      <option value="">Choose student...</option>
+                      {studentOptions.map((student) => (
+                        <option key={student.key} value={student.key} disabled={student.hasBaselineValues}>
+                          {student.studentName || 'Unnamed'}{student.section ? ` - ${student.section}` : ''}{student.enrollmentNo ? ` (${student.enrollmentNo})` : ''}{student.hasBaselineValues ? ' - already filled' : ''}
+                        </option>
+                      ))}
+                    </select>
+                  </td>
+                  <td>
+                    <div className="baseline-review-actions">
+                      <button
+                        className="tool-btn success"
+                        disabled={!canApplySuggestion}
+                        onClick={() => onApplyMapping(row, suggestedTargetKey, 'suggested')}
+                      >
+                        <CheckCircle2 size={15} /> Approve
+                      </button>
+                      <button
+                        className="tool-btn outline"
+                        disabled={!selectedTargetKey}
+                        onClick={() => onApplyMapping(row, selectedTargetKey, 'manual')}
+                      >
+                        Apply manual
+                      </button>
+                    </div>
+                  </td>
+                </tr>
+              );
+            })}
+          </tbody>
+        </table>
+      </div>
+      {reviewRows.length > 25 && (
+        <div className="baseline-review-foot">
+          Showing 25 of {reviewRows.length} baseline review rows. Use the CSV export for the full list.
+        </div>
+      )}
+    </div>
+  );
+}
+
+function StructuredUploadPanel({ loading, workflowMode, setWorkflowMode, structuredUpload, setStructuredFile, onSubmit }) {
+  const activeUpload = structuredUpload[workflowMode] || {};
+
+  const mergedExamInput = (groupKey, label) => {
+    const file = activeUpload[groupKey] || null;
     return (
-      <label key={`${groupKey}-${section}`} className="structured-file-slot">
-        <span className="structured-slot-title">{label} — 10{section}</span>
-        <input type="file" accept=".xls,.xlsx,.csv" onChange={(e) => setStructuredFile(groupKey, section, e.target.files?.[0] || null)} />
+      <label key={groupKey} className="structured-base-input">
+        <span className="structured-slot-title">{label} — Class 10 (All Sections)</span>
+        <input type="file" accept=".xls,.xlsx,.csv" onChange={(e) => setStructuredFile(workflowMode, groupKey, null, e.target.files?.[0] || null)} />
         <span className="structured-slot-file">{file ? file.name : 'No file selected'}</span>
       </label>
     );
   };
 
-  const boardFile = structuredUpload.board;
+  const boardFile = activeUpload.board;
 
   return (
     <div className="structured-panel">
       <div className="structured-panel-head">
         <div className="structured-panel-copy">
-          <span className="structured-panel-eyebrow">Structured workflow</span>
-          <h3>Structured Class 10 import form</h3>
+          <span className="structured-panel-eyebrow">5-file workflow</span>
+          <h3>Class 10 five-file import</h3>
           <p>
-            Add each sheet in its exact slot: baseline sheet first, then HY / PB1 / PB2 / Board for sections 10A to 10E.
+            Use one file for each stage: Baseline, HY, PB1, PB2, and Board. HY / PB1 / PB2 can be multi-sheet workbooks with section tabs, or a single combined sheet that includes `Section` or `Class Section` data.
           </p>
         </div>
         <button className="tool-btn primary structured-submit-btn" onClick={onSubmit} disabled={loading}>
           {loading ? <Loader2 size={16} className="spin" /> : <Upload size={16} />}
-          Import structured sheets
+          Import 5 files
         </button>
       </div>
 
@@ -2149,8 +2527,8 @@ function StructuredUploadPanel({ loading, structuredUpload, setStructuredFile, o
           </div>
           <label className="structured-base-input">
             <span className="structured-slot-title">Class 9 + Target</span>
-            <input type="file" accept=".xls,.xlsx,.csv" onChange={(e) => setStructuredFile('baseline', null, e.target.files?.[0] || null)} />
-            <span className="structured-slot-file">{structuredUpload.baseline ? structuredUpload.baseline.name : 'No file selected'}</span>
+            <input type="file" accept=".xls,.xlsx,.csv" onChange={(e) => setStructuredFile(workflowMode, 'baseline', null, e.target.files?.[0] || null)} />
+            <span className="structured-slot-file">{activeUpload.baseline ? activeUpload.baseline.name : 'No file selected'}</span>
           </label>
         </div>
 
@@ -2162,11 +2540,9 @@ function StructuredUploadPanel({ loading, structuredUpload, setStructuredFile, o
           <div key={groupKey} className="structured-exam-card">
             <div className="structured-section-head">
               <h4>{label}</h4>
-              <span>Upload section-wise sheets for 10A to 10E</span>
+              <span>Upload one file for all sections. Multi-sheet workbooks are supported.</span>
             </div>
-            <div className="structured-grid">
-              {CLASS10_SECTIONS.map((section) => sectionInput(groupKey, label, section))}
-            </div>
+            {mergedExamInput(groupKey, label)}
           </div>
         ))}
 
@@ -2177,7 +2553,7 @@ function StructuredUploadPanel({ loading, structuredUpload, setStructuredFile, o
           </div>
           <label className="structured-base-input">
             <span className="structured-slot-title">Board Result — Class 10 (All Sections)</span>
-            <input type="file" accept=".xls,.xlsx,.csv" onChange={(e) => setStructuredFile('board', null, e.target.files?.[0] || null)} />
+            <input type="file" accept=".xls,.xlsx,.csv" onChange={(e) => setStructuredFile(workflowMode, 'board', null, e.target.files?.[0] || null)} />
             <span className="structured-slot-file">{boardFile ? boardFile.name : 'No file selected'}</span>
           </label>
         </div>

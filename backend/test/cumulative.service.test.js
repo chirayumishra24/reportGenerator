@@ -4,6 +4,7 @@ const XLSX = require('xlsx');
 
 const {
   buildMasterCumulativeRows,
+  buildWorkbookCumulativeResult,
   buildWorkbookCumulativeSheet,
   buildCumulativeReportPayload,
 } = require('../src/services/cumulative.service');
@@ -257,6 +258,454 @@ test('buildWorkbookCumulativeSheet skips unmatched name-only rows so they do not
   assert.equal(cumulative.rows.length, 1);
   assert.equal(cumulative.rows[0]['Enrollment No'], '101');
   assert.equal(cumulative.rows[0]['PB1 %'], '');
+});
+
+test('buildWorkbookCumulativeSheet backfills matched baseline values without creating rows for unrelated baseline students', () => {
+  const cumulative = buildWorkbookCumulativeSheet(
+    ['HY', 'Baseline'],
+    {
+      HY: {
+        headers: ['Enroll No', 'Student Name', 'English 80', 'Maths 80', 'Grand Total'],
+        rows: [
+          {
+            'Enroll No': '101',
+            'Student Name': 'Aarav',
+            'English 80': 64,
+            'Maths 80': 70,
+            'Grand Total': 134,
+          },
+          {
+            'Enroll No': '102',
+            'Student Name': 'Diya',
+            'English 80': 60,
+            'Maths 80': 66,
+            'Grand Total': 126,
+          },
+        ],
+        meta: { examName: 'HY_10A_X-A', sectionName: 'A' },
+      },
+      Baseline: {
+        headers: ['Enroll No', 'Student Name', '% in IX', '% in IX+30'],
+        rows: [
+          {
+            'Enroll No': '101',
+            'Student Name': 'Aarav Kumar',
+            '% in IX': 81,
+            '% in IX+30': 91,
+          },
+          {
+            'Enroll No': '999',
+            'Student Name': 'Unrelated Student',
+            '% in IX': 70,
+            '% in IX+30': 80,
+          },
+        ],
+        meta: { examName: 'Target Sheet 2024', sectionName: 'A' },
+      },
+    },
+  );
+
+  assert.equal(cumulative.rows.length, 2);
+  const byEnrollment = Object.fromEntries(cumulative.rows.map((row) => [row['Enrollment No'], row]));
+  assert.equal(byEnrollment['101']['Class 9 %'], 81);
+  assert.equal(byEnrollment['101']['Target %'], 91);
+  assert.equal(byEnrollment['102']['Class 9 %'], '');
+  assert.equal(byEnrollment['102']['Target %'], '');
+  assert.equal(byEnrollment['999'], undefined);
+});
+
+test('buildWorkbookCumulativeResult reports matched and unmatched baseline rows for review', () => {
+  const cumulative = buildWorkbookCumulativeResult(
+    ['HY', 'Baseline'],
+    {
+      HY: {
+        headers: ['Section', 'Enroll No', 'Student Name', 'English 80', 'Grand Total'],
+        rows: [
+          {
+            Section: 'A',
+            'Enroll No': '101',
+            'Student Name': 'Aarav',
+            'English 80': 64,
+            'Grand Total': 64,
+          },
+          {
+            Section: 'B',
+            'Enroll No': '201',
+            'Student Name': 'Diya',
+            'English 80': 66,
+            'Grand Total': 66,
+          },
+        ],
+        meta: { examName: 'HY_CLASS10_MERGED', sectionName: '' },
+      },
+      Baseline: {
+        headers: ['Section', 'Enroll No', 'Student Name', '% in IX', '% in IX+30'],
+        rows: [
+          {
+            Section: 'A',
+            'Enroll No': '101',
+            'Student Name': 'Aarav Kumar',
+            '% in IX': 81,
+            '% in IX+30': 91,
+          },
+          {
+            Section: 'B',
+            'Enroll No': '999',
+            'Student Name': 'Unknown Student',
+            '% in IX': 70,
+            '% in IX+30': 80,
+          },
+        ],
+        meta: { examName: 'BASELINE_CLASS10_MERGED', sectionName: '' },
+      },
+    },
+  );
+
+  assert.equal(cumulative.masterCumulativeSheet.rows.length, 2);
+  assert.equal(cumulative.baselineMatchReport.matchedCount, 1);
+  assert.equal(cumulative.baselineMatchReport.unmatchedCount, 1);
+  assert.equal(cumulative.baselineMatchReport.rows.length, 2);
+  assert.equal(cumulative.baselineMatchReport.rows[0].confidence, 'exact');
+  assert.equal(cumulative.baselineMatchReport.rows[1].confidence, 'unmatched');
+});
+
+test('buildWorkbookCumulativeResult fills exact name matches even when enrollment numbers do not overlap', () => {
+  const cumulative = buildWorkbookCumulativeResult(
+    ['HY', 'Baseline'],
+    {
+      HY: {
+        headers: ['Section', 'Enroll No', 'Student Name', 'English 80', 'Grand Total'],
+        rows: [{
+          Section: 'A',
+          'Enroll No': '2016-2017/0005',
+          'Student Name': 'Aarav Jain',
+          'English 80': 64,
+          'Grand Total': 64,
+        }],
+        meta: { examName: 'HY_CLASS10_MERGED', sectionName: '' },
+      },
+      Baseline: {
+        headers: ['Section', 'Enroll No', 'Student Name', '% in IX', '% in IX+30'],
+        rows: [{
+          Section: 'A',
+          'Enroll No': '2015-2016/0170',
+          'Student Name': 'Aarav Jain',
+          '% in IX': 63.5,
+          '% in IX+30': 93.5,
+        }],
+        meta: { examName: 'BASELINE_CLASS10_MERGED', sectionName: '' },
+      },
+    },
+  );
+
+  assert.equal(cumulative.masterCumulativeSheet.rows.length, 1);
+  assert.equal(cumulative.masterCumulativeSheet.rows[0]['Enrollment No'], '2016-2017/0005');
+  assert.equal(cumulative.masterCumulativeSheet.rows[0]['Class 9 %'], 63.5);
+  assert.equal(cumulative.masterCumulativeSheet.rows[0]['Target %'], 93.5);
+  assert.equal(cumulative.baselineMatchReport.matchedCount, 1);
+  assert.equal(cumulative.baselineMatchReport.unmatchedCount, 0);
+  assert.equal(cumulative.baselineMatchReport.rows[0].confidence, 'exact');
+});
+
+test('buildWorkbookCumulativeResult reports fuzzy baseline suggestions without applying them', () => {
+  const cumulative = buildWorkbookCumulativeResult(
+    ['HY', 'Baseline'],
+    {
+      HY: {
+        headers: ['Section', 'Enroll No', 'Student Name', 'English 80', 'Grand Total'],
+        rows: [{
+          Section: 'A',
+          'Enroll No': '2016-2017/0080',
+          'Student Name': 'Aarav Gupta',
+          'English 80': 64,
+          'Grand Total': 64,
+        }],
+        meta: { examName: 'HY_CLASS10_MERGED', sectionName: '' },
+      },
+      Baseline: {
+        headers: ['Section', 'Enroll No', 'Student Name', '% in IX', '% in IX+30'],
+        rows: [{
+          Section: 'A',
+          'Enroll No': '2023-2024/0145',
+          'Student Name': 'Arnav Gupta',
+          '% in IX': 49,
+          '% in IX+30': 79,
+        }],
+        meta: { examName: 'BASELINE_CLASS10_MERGED', sectionName: '' },
+      },
+    },
+  );
+
+  assert.equal(cumulative.masterCumulativeSheet.rows.length, 1);
+  assert.equal(cumulative.masterCumulativeSheet.rows[0]['Class 9 %'], '');
+  assert.equal(cumulative.masterCumulativeSheet.rows[0]['Target %'], '');
+  assert.equal(cumulative.baselineMatchReport.matchedCount, 0);
+  assert.equal(cumulative.baselineMatchReport.unmatchedCount, 1);
+  assert.equal(cumulative.baselineMatchReport.rows[0].confidence, 'fuzzy');
+  assert.equal(cumulative.baselineMatchReport.rows[0].reason, 'Same-section fuzzy suggestion');
+  assert.equal(cumulative.baselineMatchReport.rows[0].baselineClass9Percent, 49);
+  assert.equal(cumulative.baselineMatchReport.rows[0].baselineTargetPercent, 79);
+  assert.equal(cumulative.baselineMatchReport.rows[0].suggestedStudentName, 'Aarav Gupta');
+  assert.equal(cumulative.baselineMatchReport.rows[0].suggestedEnrollmentNo, '2016-2017/0080');
+  assert.equal(cumulative.baselineMatchReport.rows[0].suggestionScore > 0.8, true);
+});
+
+test('buildWorkbookCumulativeResult rejects ambiguous fuzzy baseline suggestions', () => {
+  const cumulative = buildWorkbookCumulativeResult(
+    ['HY', 'Baseline'],
+    {
+      HY: {
+        headers: ['Section', 'Enroll No', 'Student Name', 'English 80', 'Grand Total'],
+        rows: [
+          {
+            Section: 'A',
+            'Enroll No': '101',
+            'Student Name': 'Aaryan Jain',
+            'English 80': 64,
+            'Grand Total': 64,
+          },
+          {
+            Section: 'A',
+            'Enroll No': '102',
+            'Student Name': 'Arya Jain',
+            'English 80': 66,
+            'Grand Total': 66,
+          },
+        ],
+        meta: { examName: 'HY_CLASS10_MERGED', sectionName: '' },
+      },
+      Baseline: {
+        headers: ['Section', 'Enroll No', 'Student Name', '% in IX', '% in IX+30'],
+        rows: [{
+          Section: 'A',
+          'Enroll No': '999',
+          'Student Name': 'Aryan Jain',
+          '% in IX': 68,
+          '% in IX+30': 98,
+        }],
+        meta: { examName: 'BASELINE_CLASS10_MERGED', sectionName: '' },
+      },
+    },
+  );
+
+  const byEnrollment = Object.fromEntries(cumulative.masterCumulativeSheet.rows.map((row) => [row['Enrollment No'], row]));
+  assert.equal(byEnrollment['101']['Class 9 %'], '');
+  assert.equal(byEnrollment['102']['Class 9 %'], '');
+  assert.equal(cumulative.baselineMatchReport.matchedCount, 0);
+  assert.equal(cumulative.baselineMatchReport.unmatchedCount, 1);
+  assert.equal(cumulative.baselineMatchReport.rows[0].confidence, 'unmatched');
+  assert.equal(cumulative.baselineMatchReport.rows[0].reason, 'Ambiguous fuzzy candidates');
+});
+
+test('buildWorkbookCumulativeSheet still backfills matched baseline rows when overall baseline overlap is below fifty percent', () => {
+  const cumulative = buildWorkbookCumulativeSheet(
+    ['HY', 'Baseline'],
+    {
+      HY: {
+        headers: ['Enroll No', 'Student Name', 'English 80', 'Maths 80', 'Grand Total'],
+        rows: [
+          {
+            'Enroll No': '101',
+            'Student Name': 'Aarav',
+            'English 80': 64,
+            'Maths 80': 70,
+            'Grand Total': 134,
+          },
+          {
+            'Enroll No': '102',
+            'Student Name': 'Diya',
+            'English 80': 60,
+            'Maths 80': 66,
+            'Grand Total': 126,
+          },
+        ],
+        meta: { examName: 'HY_10A_X-A', sectionName: 'A' },
+      },
+      Baseline: {
+        headers: ['Enroll No', 'Student Name', '% in IX', '% in IX+30'],
+        rows: [
+          {
+            'Enroll No': '101',
+            'Student Name': 'Aarav Kumar',
+            '% in IX': 81,
+            '% in IX+30': 91,
+          },
+          {
+            'Enroll No': '901',
+            'Student Name': 'Unrelated Student 1',
+            '% in IX': 70,
+            '% in IX+30': 80,
+          },
+          {
+            'Enroll No': '902',
+            'Student Name': 'Unrelated Student 2',
+            '% in IX': 71,
+            '% in IX+30': 81,
+          },
+          {
+            'Enroll No': '903',
+            'Student Name': 'Unrelated Student 3',
+            '% in IX': 72,
+            '% in IX+30': 82,
+          },
+        ],
+        meta: { examName: 'Target Sheet 2024', sectionName: 'A' },
+      },
+    },
+  );
+
+  assert.equal(cumulative.rows.length, 2);
+  const byEnrollment = Object.fromEntries(cumulative.rows.map((row) => [row['Enrollment No'], row]));
+  assert.equal(byEnrollment['101']['Class 9 %'], 81);
+  assert.equal(byEnrollment['101']['Target %'], 91);
+  assert.equal(byEnrollment['102']['Class 9 %'], '');
+  assert.equal(byEnrollment['102']['Target %'], '');
+});
+
+test('buildWorkbookCumulativeSheet uses same-section compact-name fallback for punctuation-split baseline names', () => {
+  const cumulative = buildWorkbookCumulativeSheet(
+    ['HY', 'Baseline'],
+    {
+      HY: {
+        headers: ['Enroll No', 'Student Name', 'English 80', 'Maths 80', 'Grand Total'],
+        rows: [{
+          'Enroll No': '201',
+          'Student Name': 'Varun Moudgill',
+          'English 80': 66,
+          'Maths 80': 70,
+          'Grand Total': 136,
+        }],
+        meta: { examName: 'HY_10E_X-E', sectionName: 'E' },
+      },
+      Baseline: {
+        headers: ['Enroll No', 'Student Name', '% in IX', '% in IX+30'],
+        rows: [{
+          'Enroll No': '999',
+          'Student Name': 'Varu N Moudgill',
+          '% in IX': 84,
+          '% in IX+30': 94,
+        }],
+        meta: { examName: 'Target Sheet 2024', sectionName: 'E' },
+      },
+    },
+  );
+
+  assert.equal(cumulative.rows.length, 1);
+  assert.equal(cumulative.rows[0]['Enrollment No'], '201');
+  assert.equal(cumulative.rows[0]['Class 9 %'], 84);
+  assert.equal(cumulative.rows[0]['Target %'], 94);
+});
+
+test('buildWorkbookCumulativeSheet does not match near names that differ beyond spacing and punctuation', () => {
+  const cumulative = buildWorkbookCumulativeSheet(
+    ['HY', 'Baseline'],
+    {
+      HY: {
+        headers: ['Enroll No', 'Student Name', 'English 80', 'Maths 80', 'Grand Total'],
+        rows: [{
+          'Enroll No': '201',
+          'Student Name': 'Aarav Gupta',
+          'English 80': 66,
+          'Maths 80': 70,
+          'Grand Total': 136,
+        }],
+        meta: { examName: 'HY_10A_X-A', sectionName: 'A' },
+      },
+      Baseline: {
+        headers: ['Enroll No', 'Student Name', '% in IX', '% in IX+30'],
+        rows: [{
+          'Enroll No': '999',
+          'Student Name': 'Arnav Gupta',
+          '% in IX': 84,
+          '% in IX+30': 94,
+        }],
+        meta: { examName: 'Target Sheet 2024', sectionName: 'A' },
+      },
+    },
+  );
+
+  assert.equal(cumulative.rows.length, 1);
+  assert.equal(cumulative.rows[0]['Enrollment No'], '201');
+  assert.equal(cumulative.rows[0]['Class 9 %'], '');
+  assert.equal(cumulative.rows[0]['Target %'], '');
+});
+
+test('buildWorkbookCumulativeSheet prefers exact enrollment matches over exact-name or fuzzy alternatives', () => {
+  const cumulative = buildWorkbookCumulativeSheet(
+    ['HY', 'Baseline'],
+    {
+      HY: {
+        headers: ['Enroll No', 'Student Name', 'English 80', 'Maths 80', 'Grand Total'],
+        rows: [
+          {
+            'Enroll No': '101',
+            'Student Name': 'Aryan Bhandari',
+            'English 80': 66,
+            'Maths 80': 70,
+            'Grand Total': 136,
+          },
+          {
+            'Enroll No': '102',
+            'Student Name': 'Aaryan Bhandari',
+            'English 80': 68,
+            'Maths 80': 72,
+            'Grand Total': 140,
+          },
+        ],
+        meta: { examName: 'HY_10C_X-C', sectionName: 'C' },
+      },
+      Baseline: {
+        headers: ['Enroll No', 'Student Name', '% in IX', '% in IX+30'],
+        rows: [{
+          'Enroll No': '101',
+          'Student Name': 'Aaryan Bhandari',
+          '% in IX': 84,
+          '% in IX+30': 94,
+        }],
+        meta: { examName: 'Target Sheet 2024', sectionName: 'C' },
+      },
+    },
+  );
+
+  const byEnrollment = Object.fromEntries(cumulative.rows.map((row) => [row['Enrollment No'], row]));
+  assert.equal(byEnrollment['101']['Class 9 %'], 84);
+  assert.equal(byEnrollment['101']['Target %'], 94);
+  assert.equal(byEnrollment['102']['Class 9 %'], '');
+  assert.equal(byEnrollment['102']['Target %'], '');
+});
+
+test('buildWorkbookCumulativeSheet does not use compact-name fallback for surname-only matches', () => {
+  const cumulative = buildWorkbookCumulativeSheet(
+    ['HY', 'Baseline'],
+    {
+      HY: {
+        headers: ['Enroll No', 'Student Name', 'English 80', 'Maths 80', 'Grand Total'],
+        rows: [{
+          'Enroll No': '301',
+          'Student Name': 'Varun Sharma',
+          'English 80': 61,
+          'Maths 80': 65,
+          'Grand Total': 126,
+        }],
+        meta: { examName: 'HY_10A_X-A', sectionName: 'A' },
+      },
+      Baseline: {
+        headers: ['Enroll No', 'Student Name', '% in IX', '% in IX+30'],
+        rows: [{
+          'Enroll No': '998',
+          'Student Name': 'Gunjan Sharma',
+          '% in IX': 73,
+          '% in IX+30': 83,
+        }],
+        meta: { examName: 'Target Sheet 2024', sectionName: 'A' },
+      },
+    },
+  );
+
+  assert.equal(cumulative.rows.length, 1);
+  assert.equal(cumulative.rows[0]['Enrollment No'], '301');
+  assert.equal(cumulative.rows[0]['Class 9 %'], '');
+  assert.equal(cumulative.rows[0]['Target %'], '');
 });
 
 test('buildWorkbookCumulativeSheet maps board roll-number rows onto the enrollment roster without creating duplicate students', () => {

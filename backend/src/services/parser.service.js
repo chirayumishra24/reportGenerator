@@ -87,13 +87,27 @@ function findAdmissionColumn(headers) {
 function findClass9Column(headers) {
   return headers.find((header) => {
     const lower = String(header || '').toLowerCase();
-    return (lower.includes('% in ix') || lower.includes('ix %') || lower.includes('class 9') || lower.includes('ix percent') || lower.includes('ix marks') || lower.includes('9th %'))
-      && !lower.includes('+30') && !lower.includes('target');
+    // Match ix %, % in ix, class 9, 9th %, 9th class %, etc.
+    const isBaseline = (
+      lower.includes('% in ix') || 
+      lower.includes('ix %') || 
+      lower.includes('class 9') || 
+      lower.includes('9th class') || 
+      lower.includes('ix percent') || 
+      lower.includes('ix marks') || 
+      lower.includes('baseline') ||
+      (lower.includes('9th') && (lower.includes('%') || lower.includes('percentage')))
+    );
+    // Crucially exclude target/plus-30 columns that also mention IX
+    return isBaseline && !lower.includes('+30') && !lower.includes('target');
   }) || null;
 }
 
 function findTarget100Column(headers) {
-  const priorities = ['% in IX+30', 'X Target', 'Target', 'Class X Target', 'Target %', 'Target Percentage'];
+  const priorities = [
+    '% in IX+30', 'X Target', 'Target', 'Class X Target', 'Target %', 
+    'Target Percentage', 'IX+30', 'IX + 30', 'IX +30', 'IX+ 30'
+  ];
   for (const column of priorities) {
     const found = headers.find((header) => {
       if (!header) return false;
@@ -105,9 +119,9 @@ function findTarget100Column(headers) {
 
   return headers.find((header) => {
     const lower = String(header || '').toLowerCase();
-    const hasTarget = lower.includes('target') || lower.includes('+30');
+    const hasTarget = lower.includes('target') || lower.includes('+30') || lower.includes('+ 30');
     // Don't exclude 'ix' if it's paired with '+30' (common in target headers)
-    const isIxBaselineOnly = lower.includes('ix') && !lower.includes('+30');
+    const isIxBaselineOnly = (lower.includes('ix') || lower.includes('9th')) && !lower.includes('+30') && !lower.includes('+ 30');
     return hasTarget && !isIxBaselineOnly;
   }) || null;
 }
@@ -276,20 +290,78 @@ function parseClassSection(value) {
   };
 }
 
+function findSectionColumn(headers = []) {
+  return headers.find((header) => {
+    const normalized = normalizeHeaderKey(header);
+    return normalized === 'class section' || normalized === 'section';
+  }) || null;
+}
+
+function parseRowClassSection(value) {
+  const text = String(value || '').toUpperCase().replace(/[_]+/g, ' ').replace(/\s+/g, ' ').trim();
+  if (!text) return { className: null, sectionName: null };
+
+  const directSectionMatch = text.match(/^(?:SEC(?:TION)?)?\s*([A-Z])$/);
+  if (directSectionMatch) {
+    return { className: null, sectionName: directSectionMatch[1] || null };
+  }
+
+  return parseClassSection(text);
+}
+
+function resolveRowClassSection(row = {}, headers = [], meta = {}, context = {}) {
+  const sectionColumn = findSectionColumn(headers);
+  if (sectionColumn) {
+    const fromRow = parseRowClassSection(row[sectionColumn]);
+    if (fromRow.className || fromRow.sectionName) {
+      return {
+        className: fromRow.className || meta.className || null,
+        sectionName: fromRow.sectionName || meta.sectionName || null,
+      };
+    }
+  }
+
+  if (meta.className || meta.sectionName) {
+    return {
+      className: meta.className || null,
+      sectionName: meta.sectionName || null,
+    };
+  }
+
+  const fromSheetName = parseClassSection(context.sheetName || '');
+  if (fromSheetName.className || fromSheetName.sectionName) {
+    return fromSheetName;
+  }
+
+  return parseClassSection(context.sourceFileName || '');
+}
+
+function resolveRowSection(row = {}, headers = [], meta = {}, context = {}) {
+  return resolveRowClassSection(row, headers, meta, context).sectionName || '';
+}
+
 function detectSheetMeta(sheetName, headers = [], rows = [], sourceFileName = '') {
-  const classSectionHeader = headers.find((header) => normalizeText(header).includes('class section'));
+  const classSectionHeader = findSectionColumn(headers);
   let className = null;
   let sectionName = null;
+  let rowLevelSectionsMixed = false;
 
   if (classSectionHeader) {
-    const values = rows.map((row) => row[classSectionHeader]).filter(Boolean);
-    for (const value of values) {
-      const parsed = parseClassSection(value);
-      if (parsed.className || parsed.sectionName) {
-        className = parsed.className || className;
-        sectionName = parsed.sectionName || sectionName;
-        break;
-      }
+    const parsedValues = rows
+      .map((row) => parseRowClassSection(row[classSectionHeader]))
+      .filter((parsed) => parsed.className || parsed.sectionName);
+
+    const classNames = Array.from(new Set(parsedValues.map((parsed) => parsed.className).filter(Boolean)));
+    const sectionNames = Array.from(new Set(parsedValues.map((parsed) => parsed.sectionName).filter(Boolean)));
+
+    if (classNames.length === 1) {
+      [className] = classNames;
+    }
+    if (sectionNames.length === 1) {
+      [sectionName] = sectionNames;
+    }
+    if (sectionNames.length > 1) {
+      rowLevelSectionsMixed = true;
     }
   }
 
@@ -309,6 +381,8 @@ function detectSheetMeta(sheetName, headers = [], rows = [], sourceFileName = ''
     examName: removeFileExtension(sourceFileName) || sheetName,
     className,
     sectionName,
+    rowLevelSectionColumn: classSectionHeader || null,
+    rowLevelSectionsMixed,
   };
 }
 
@@ -574,6 +648,17 @@ function validateParsedSheet(sheetName, headers, rows, meta = {}) {
     }
   }
 
+  if ((examStage === 'HY' || examStage === 'PB1' || examStage === 'PB2') && !meta.sectionName && rows.length > 0) {
+    const rowsMissingSection = rows.filter((row) => !resolveRowSection(row, headers, meta, {
+      sheetName,
+      sourceFileName: meta.examName || sheetName,
+    })).length;
+
+    if (rowsMissingSection > 0) {
+      issues.push(`Missing Section or Class Section values in ${sheetName} for ${rowsMissingSection} student row${rowsMissingSection > 1 ? 's' : ''}.`);
+    }
+  }
+
   const duplicates = new Set();
   if (admissionCol) {
     const seen = new Set();
@@ -692,6 +777,9 @@ module.exports = {
   isLikelyStudentDataRow,
   normalizeSheetName,
   parseClassSection,
+  findSectionColumn,
+  resolveRowClassSection,
+  resolveRowSection,
   detectSheetMeta,
   detectExamStage,
   countMarksLikeHeaders,

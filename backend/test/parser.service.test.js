@@ -10,6 +10,7 @@ const {
   isLikelyStudentDataRow,
   parseClassSection,
   parseWorkbookBuffer,
+  resolveRowSection,
 } = require('../src/services/parser.service');
 
 test('detectExamStage recognizes teacher file names that use underscores and section codes', () => {
@@ -176,4 +177,41 @@ test('parseWorkbookBuffer uses the title row to detect HY and PB stages for gene
 
   assert.equal(parsed.sheets.Sheet1.validation.examStage, 'HY');
   assert.equal(parsed.sheets.Sheet2.validation.examStage, 'PB2');
+});
+
+test('parseWorkbookBuffer accepts merged exam sheets with row-level Section values', () => {
+  const workbook = XLSX.utils.book_new();
+  const sheet = XLSX.utils.aoa_to_sheet([
+    ['HALF YEARLY CLASS 10'],
+    ['Section', 'Enroll No.', 'Student Name', 'English (80)', '%'],
+    ['A', '2017-2018/0051', 'AARADHYA AGRAWAL', 58, 72.5],
+    ['B', '2017-2018/0062', 'DIYA SHARMA', 62, 77.5],
+  ]);
+
+  XLSX.utils.book_append_sheet(workbook, sheet, 'Sheet1');
+
+  const buffer = XLSX.write(workbook, { type: 'buffer', bookType: 'xlsx' });
+  const parsed = parseWorkbookBuffer(buffer, 'HY_CLASS10_MERGED.xlsx');
+  const parsedSheet = parsed.sheets.Sheet1;
+
+  assert.equal(parsedSheet.validation.ok, true);
+  assert.equal(parsedSheet.meta.sectionName, null);
+  assert.equal(resolveRowSection(parsedSheet.rows[0], parsedSheet.headers, parsedSheet.meta, { sheetName: 'Sheet1', sourceFileName: parsedSheet.meta.examName }), 'A');
+  assert.equal(resolveRowSection(parsedSheet.rows[1], parsedSheet.headers, parsedSheet.meta, { sheetName: 'Sheet1', sourceFileName: parsedSheet.meta.examName }), 'B');
+});
+
+test('parseWorkbookBuffer reports validation issues for merged exam sheets without row-level section data', () => {
+  const workbook = XLSX.utils.book_new();
+  const sheet = XLSX.utils.aoa_to_sheet([
+    ['HALF YEARLY CLASS 10'],
+    ['Enroll No.', 'Student Name', 'English (80)', '%'],
+    ['2017-2018/0051', 'AARADHYA AGRAWAL', 58, 72.5],
+  ]);
+
+  XLSX.utils.book_append_sheet(workbook, sheet, 'Sheet1');
+
+  const buffer = XLSX.write(workbook, { type: 'buffer', bookType: 'xlsx' });
+  const parsed = parseWorkbookBuffer(buffer, 'HY_CLASS10_MERGED.xlsx');
+
+  assert.match(parsed.sheets.Sheet1.validation.issues.join(' | '), /Missing Section or Class Section values/);
 });

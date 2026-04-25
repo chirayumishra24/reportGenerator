@@ -1,6 +1,6 @@
-const { parseWorkbookBuffer } = require('./parser.service');
+const { parseWorkbookBuffer, detectExamStage } = require('./parser.service');
 const persistenceService = require('./persistence.service');
-const { buildWorkbookCumulativeSheet } = require('./cumulative.service');
+const { buildWorkbookCumulativeResult } = require('./cumulative.service');
 
 function badRequest(message) {
   const error = new Error(message);
@@ -33,6 +33,19 @@ function buildUniqueSheetName(preferredName, usedNames) {
   return nextName;
 }
 
+function detectStructuredFileStage(fileName, parsed = {}) {
+  const parsedStages = Array.from(new Set(
+    (parsed.parsedSheets || [])
+      .map((sheet) => sheet.validation?.examStage || detectExamStage(sheet.sheetName || fileName, sheet.headers || []))
+      .filter((stage) => stage && stage !== 'UNKNOWN'),
+  ));
+
+  if (parsedStages.length === 1) return parsedStages[0];
+
+  const fallbackStage = detectExamStage(fileName, []);
+  return fallbackStage !== 'UNKNOWN' ? fallbackStage : null;
+}
+
 async function parseWorkbook(file) {
   if (!file) {
     throw badRequest('No file uploaded');
@@ -54,14 +67,28 @@ async function structuredImport(files) {
   if (!files || files.length === 0) {
     throw badRequest('No files uploaded');
   }
+  if (files.length !== 5) {
+    throw badRequest('Structured import requires exactly 5 files: Baseline, HY, PB1, PB2, and Board.');
+  }
 
   const usedNames = new Set();
   const mergedSheetNames = [];
   const mergedSheets = {};
   const issues = [];
+  const fileStages = new Map();
+  const requiredStages = ['BASELINE', 'HY', 'PB1', 'PB2', 'BOARD'];
 
   for (const file of files) {
     const parsed = parseWorkbookBuffer(file.buffer, file.originalname);
+    const fileStage = detectStructuredFileStage(file.originalname, parsed);
+    if (!fileStage || !requiredStages.includes(fileStage)) {
+      throw badRequest(`Could not classify ${file.originalname} as one of Baseline, HY, PB1, PB2, or Board.`);
+    }
+    if (fileStages.has(fileStage)) {
+      throw badRequest(`Duplicate ${fileStage} file uploaded: ${file.originalname}. Please upload exactly one file for each stage.`);
+    }
+    fileStages.set(fileStage, file.originalname);
+
     const fileIssues = buildValidationIssues(parsed.parsedSheets).map((issue) => ({
       fileName: file.originalname,
       ...issue,
@@ -77,12 +104,20 @@ async function structuredImport(files) {
     }
   }
 
+  const missingStages = requiredStages.filter((stage) => !fileStages.has(stage));
+  if (missingStages.length > 0) {
+    throw badRequest(`Missing required structured file(s): ${missingStages.join(', ')}.`);
+  }
+
+  const cumulativeResult = buildWorkbookCumulativeResult(mergedSheetNames, mergedSheets);
+
   return {
     sheetNames: mergedSheetNames,
     sheets: mergedSheets,
     validationPassed: issues.length === 0,
     issues,
-    masterCumulativeSheet: buildWorkbookCumulativeSheet(mergedSheetNames, mergedSheets),
+    masterCumulativeSheet: cumulativeResult.masterCumulativeSheet,
+    baselineMatchReport: cumulativeResult.baselineMatchReport,
   };
 }
 
