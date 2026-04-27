@@ -2748,8 +2748,8 @@ function SheetAnalysis({ sheetName, sheet }) {
                 {chartData.map((entry, i) => (
                   <Cell key={i} fill={entry.color} />
                 ))}
-              </BarChart>
-            </ResponsiveContainer>
+              </Bar>
+            </BarChart>
           </ResponsiveContainer>
         </div>
       </div>
