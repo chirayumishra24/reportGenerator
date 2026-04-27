@@ -312,19 +312,34 @@ function detectExamStage(sheetName, headers = []) {
   const combined = `${sheetName} ${headers.join(' ')}`.toLowerCase();
   const normalizedCombined = combined.replace(/[^a-z0-9]+/g, ' ').trim();
   
-  if (normalizedCombined.includes('cbse result') || 
-      (normalizedCombined.includes('cbse') && normalizedCombined.includes('result')) || 
-      normalizedCombined.includes('all subject wise report') ||
-      normalizedCombined.includes('board result') ||
-      normalizedCombined.includes('final result')) {
+  // 1. Explicit Frontend Prefixes (Absolute Priority)
+  if (normalizedCombined.includes('baseline class10')) return 'BASELINE';
+  if (normalizedCombined.includes('hy class10')) return 'HY';
+  if (normalizedCombined.includes('pb1 class10')) return 'PB1';
+  if (normalizedCombined.includes('pb2 class10')) return 'PB2';
+  if (normalizedCombined.includes('board class10')) return 'BOARD';
+
+  // 2. Specific Exam Stages (HY, then PB1, then PB2)
+  if (normalizedCombined.includes('half yearly') || normalizedCombined.includes('halfyearly') || /\bhy\b/.test(normalizedCombined)) return 'HY';
+  
+  if (normalizedCombined.includes('preboard 1') || normalizedCombined.includes('pre board 1') || normalizedCombined.includes('preboard i') || normalizedCombined.includes('pre board i') || /\bpb1\b/.test(normalizedCombined)) return 'PB1';
+  if (normalizedCombined.includes('preboard 2') || normalizedCombined.includes('pre board 2') || normalizedCombined.includes('preboard ii') || normalizedCombined.includes('pre board ii') || /\bpb2\b/.test(normalizedCombined)) return 'PB2';
+
+  // 3. Board Results (Specific keywords)
+  const isBoardResult = normalizedCombined.includes('cbse result') || 
+                        (normalizedCombined.includes('cbse') && normalizedCombined.includes('result')) || 
+                        normalizedCombined.includes('all subject wise report') ||
+                        normalizedCombined.includes('board result') ||
+                        normalizedCombined.includes('final result') ||
+                        normalizedCombined.includes('annual result');
+  
+  // 4. Broad Board check, but excluding metadata columns that often mention "Board"
+  const isMetadataSheet = normalizedCombined.includes('registration') || normalizedCombined.includes('roll number') || normalizedCombined.includes('roll list');
+  if ((isBoardResult || /\bboard\b/.test(normalizedCombined)) && !isMetadataSheet) {
     return 'BOARD';
   }
-  if (/\bboard\b/.test(normalizedCombined)) return 'BOARD';
 
-  if (normalizedCombined.includes('half yearly') || normalizedCombined.includes('halfyearly') || /\bhy\b/.test(normalizedCombined)) return 'HY';
-  if (normalizedCombined.includes('preboard 2') || normalizedCombined.includes('pre board 2') || normalizedCombined.includes('preboard ii') || normalizedCombined.includes('pre board ii') || /\bpb2\b/.test(normalizedCombined)) return 'PB2';
-  if (normalizedCombined.includes('preboard 1') || normalizedCombined.includes('pre board 1') || normalizedCombined.includes('preboard i') || normalizedCombined.includes('pre board i') || /\bpb1\b/.test(normalizedCombined)) return 'PB1';
-
+  // 5. Baseline
   const class9Col = findClass9Column(headers);
   const targetCol = findTarget100Column(headers);
   if (class9Col && targetCol) return 'BASELINE';

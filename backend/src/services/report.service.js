@@ -34,16 +34,23 @@ function buildUniqueSheetName(preferredName, usedNames) {
 }
 
 function detectStructuredFileStage(fileName, parsed = {}) {
+  // 1. Prioritize filename signal for structured imports
+  const fileNameStage = detectExamStage(fileName, []);
+  if (fileNameStage !== 'UNKNOWN') return fileNameStage;
+
+  // 2. Fallback to sheet content signal
   const parsedStages = Array.from(new Set(
     (parsed.parsedSheets || [])
-      .map((sheet) => sheet.validation?.examStage || detectExamStage(sheet.sheetName || fileName, sheet.headers || []))
+      .map((sheet) => {
+        // Use validation stage if already set, or detect from sheet name and headers
+        // Pass empty array for headers if we only want to detect from sheet name
+        return sheet.validation?.examStage || detectExamStage(sheet.sheetName, sheet.headers || []);
+      })
       .filter((stage) => stage && stage !== 'UNKNOWN'),
   ));
 
   if (parsedStages.length === 1) return parsedStages[0];
-
-  const fallbackStage = detectExamStage(fileName, []);
-  return fallbackStage !== 'UNKNOWN' ? fallbackStage : null;
+  return null;
 }
 
 async function parseWorkbook(file) {
