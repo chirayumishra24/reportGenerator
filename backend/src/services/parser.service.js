@@ -87,8 +87,8 @@ function findAdmissionColumn(headers) {
 
 function findClass9Column(headers) {
   const priorities = [
-    '% in IX', 'IX %', 'Class IX %', 'Class 9 %', 'IX Percentage', '9th %', 'Class 9th %',
-    'IX 100', 'IX (100)', 'Percentage in IX', 'IX Percent', '9th Percentage'
+    'Class 9th %', 'Class IX %', 'IX %', '% in IX', 'Class 9 %', 'IX Percentage', '9th %', '9 %', 'Class 9th Percentage',
+    'IX(100)', 'IX (100)', 'IX_PERCENT', 'CLASS_IX_PERC', 'Percentage in IX', 'IX Percent', '9th Percentage'
   ];
   
   for (const p of priorities) {
@@ -134,10 +134,9 @@ function findClass9Column(headers) {
 
 function findTarget100Column(headers) {
   const priorities = [
-    '% in IX+30', 'X Target', 'Target', 'Class X Target', 'Target %', 
-    'Target Percentage', 'IX+30', 'IX + 30', 'IX +30', 'IX+ 30',
-    'X TARGET %', 'X TARGET PERCENTAGE', 'Target 100', 'X 100',
-    'Projected %', 'Projected Target'
+    'Target %', 'Target Percentage', 'X Target', 'Class 10 Target', 'Target 100', 'Target (100)',
+    'Target % (X)', 'X_TARGET', 'TARGET_PERCENT', '% in IX+30', 'IX+30', 'IX + 30', 'IX +30', 'IX+ 30',
+    'X TARGET %', 'X TARGET PERCENTAGE', 'X 100', 'Projected %', 'Projected Target'
   ];
   for (const col of priorities) {
     const found = headers.find(h => {
@@ -158,18 +157,28 @@ function findTarget100Column(headers) {
 }
 
 function findExamPercentColumn(headers) {
-  // Prioritize exact '%' match as requested by the user
+  const priorities = [
+    'Board %', 'Board Percentage', 'Final %', 'Final Percentage', 'CBSE %', 'Annual %',
+    '%', 'Percentage', 'Exam %', 'Grand Total %', 'Agg %', 'Agg. %', 'Total %'
+  ];
+  
   const exactPercent = headers.find((h) => String(h || '').trim() === '%');
   if (exactPercent) return exactPercent;
 
+  for (const p of priorities) {
+    const found = headers.find(h => {
+      const lower = String(h || '').toLowerCase().trim();
+      return lower === p.toLowerCase();
+    });
+    if (found) return found;
+  }
+
   return headers.find((header) => {
     const lower = String(header || '').toLowerCase().trim();
-    return lower === 'percentage' || (
-      lower.includes('%')
+    return lower.includes('%')
       && !lower.includes('ix')
       && !lower.includes('target')
-      && !lower.includes('+30')
-    );
+      && !lower.includes('+30');
   }) || null;
 }
 

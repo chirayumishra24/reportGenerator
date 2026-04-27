@@ -73,8 +73,8 @@ function toSafeNumber(value) {
 
 function findClass9Column(headers) {
   const priorities = [
-    '% in IX', 'IX %', 'Class IX %', 'Class 9 %', 'IX Percentage', '9th %', 'Class 9th %',
-    'IX 100', 'IX (100)', 'Percentage in IX', 'IX Percent', '9th Percentage'
+    'Class 9th %', 'Class IX %', 'IX %', '% in IX', 'Class 9 %', 'IX Percentage', '9th %', '9 %', 'Class 9th Percentage',
+    'IX(100)', 'IX (100)', 'IX_PERCENT', 'CLASS_IX_PERC'
   ];
   
   for (const p of priorities) {
@@ -109,7 +109,6 @@ function findClass9Column(headers) {
       (lower.includes('9th') && (lower.includes('%') || lower.includes('percentage') || lower.includes('marks'))) ||
       (lower.includes('ix') && (lower.includes('%') || lower.includes('percentage') || lower.includes('score') || lower.includes('marks')))
     );
-    // Crucially exclude target/plus-30 columns that also mention IX
     const isTarget = lower.includes('+30') || lower.includes('target') || lower.includes('+ 30') || lower.includes('projected') || lower.includes('improvement');
     return isBaseline && !isTarget;
   }) || null;
@@ -117,10 +116,8 @@ function findClass9Column(headers) {
 
 function findTarget100Column(headers) {
   const priorities = [
-    '% in IX+30', 'X Target', 'Target', 'Class X Target', 'Target %', 
-    'Target Percentage', 'IX+30', 'IX + 30', 'IX +30', 'IX+ 30',
-    'X TARGET %', 'X TARGET PERCENTAGE', 'Target 100', 'X 100',
-    'Projected %', 'Projected Target'
+    'Target %', 'Target Percentage', 'X Target', 'Class 10 Target', 'Target 100', 'Target (100)',
+    'Target % (X)', 'X_TARGET', 'TARGET_PERCENT'
   ];
   for (const col of priorities) {
     const found = headers.find(h => {
@@ -134,14 +131,16 @@ function findTarget100Column(headers) {
   return headers.find(h => {
     const lower = String(h || '').toLowerCase().replace(/\s+/g, ' ');
     const hasTarget = lower.includes('target') || lower.includes('+30') || lower.includes('+ 30') || lower.includes('projected');
-    // Don't exclude 'ix' if it's paired with '+30' (common in target headers)
     const isIxBaselineOnly = (lower.includes('ix') || lower.includes('9th')) && !lower.includes('+30') && !lower.includes('+ 30') && !lower.includes('target') && !lower.includes('projected');
     return hasTarget && !isIxBaselineOnly;
   }) || null;
 }
 
 function findExamPercentColumn(headers) {
-  // Prioritize exact '%' match as requested by the user
+  const priorities = [
+    'Board %', 'Board Percentage', 'Final %', 'Final Percentage', 'CBSE %', 'Annual %',
+    '%', 'Percentage', 'Exam %', 'Grand Total %', 'Agg %', 'Agg. %', 'Total %'
+  ];
   const exactPercent = headers.find((h) => String(h || '').trim() === '%');
   if (exactPercent) return exactPercent;
 
@@ -247,7 +246,7 @@ function detectHeaderRowIndex(matrix = []) {
   let bestIndex = 0;
   let bestScore = -1;
 
-  for (let rowIndex = 0; rowIndex < scanLimit; rowIndex += 1) {
+  for (const rowIndex = 0; rowIndex < scanLimit; rowIndex += 1) {
     const row = (matrix[rowIndex] || []).map((cell) => String(cell ?? '').trim());
     const normalized = row.map(normalizeHeaderKey);
     const hasName = normalized.some((cell) => cell.includes('name') && !cell.includes('father') && !cell.includes('mother'));
@@ -284,7 +283,6 @@ function buildHeadersFromRow(rawHeaders = [], prevRow = []) {
     const cellValue = String(value ?? '').trim();
     const contextValue = String(prevRow[index] ?? '').trim();
     
-    // If the header is just a generic symbol like '%' or 'Marks', try to prepend context from row above
     const isGeneric = ['%', 'marks', 'total', 'grand total', 'target', '100', '80', 'percent', 'percentage'].includes(cellValue.toLowerCase());
     if (isGeneric && contextValue && !['s.no', 'name', 'enrollment', 'admission'].includes(contextValue.toLowerCase())) {
       return `${contextValue} ${cellValue}`;
@@ -299,20 +297,17 @@ function detectExamStage(sheetName, headers = []) {
   const combined = `${sheetName} ${headers.join(' ')}`.toLowerCase();
   const normalizedCombined = combined.replace(/[^a-z0-9]+/g, ' ').trim();
   
-  // 1. Explicit Frontend Prefixes (Absolute Priority)
   if (normalizedCombined.includes('baseline class10')) return 'BASELINE';
   if (normalizedCombined.includes('hy class10')) return 'HY';
   if (normalizedCombined.includes('pb1 class10')) return 'PB1';
   if (normalizedCombined.includes('pb2 class10')) return 'PB2';
   if (normalizedCombined.includes('board class10')) return 'BOARD';
 
-  // 2. Specific Exam Stages (HY, then PB1, then PB2)
   if (normalizedCombined.includes('half yearly') || normalizedCombined.includes('halfyearly') || /\bhy\b/.test(normalizedCombined)) return 'HY';
   
   if (normalizedCombined.includes('preboard 1') || normalizedCombined.includes('pre board 1') || normalizedCombined.includes('preboard i') || normalizedCombined.includes('pre board i') || /\bpb1\b/.test(normalizedCombined)) return 'PB1';
   if (normalizedCombined.includes('preboard 2') || normalizedCombined.includes('pre board 2') || normalizedCombined.includes('preboard ii') || normalizedCombined.includes('pre board ii') || /\bpb2\b/.test(normalizedCombined)) return 'PB2';
 
-  // 3. Board Results (Specific keywords)
   const isBoardResult = normalizedCombined.includes('cbse result') || 
                         (normalizedCombined.includes('cbse') && normalizedCombined.includes('result')) || 
                         normalizedCombined.includes('all subject wise report') ||
@@ -320,13 +315,11 @@ function detectExamStage(sheetName, headers = []) {
                         normalizedCombined.includes('final result') ||
                         normalizedCombined.includes('annual result');
   
-  // 4. Broad Board check, but excluding metadata columns that often mention "Board"
   const isMetadataSheet = normalizedCombined.includes('registration') || normalizedCombined.includes('roll number') || normalizedCombined.includes('roll list');
   if ((isBoardResult || /\bboard\b/.test(normalizedCombined)) && !isMetadataSheet) {
     return 'BOARD';
   }
 
-  // 5. Baseline
   const class9Col = findClass9Column(headers);
   const targetCol = findTarget100Column(headers);
   if (class9Col && targetCol) return 'BASELINE';
@@ -733,14 +726,12 @@ function getScoreColor(val) {
   return 'score-poor';
 }
 
-// Check if a subject value means "not opted" (dash, empty, etc.)
 function isNotOpted(val) {
   if (val === null || val === undefined || val === '') return true;
   const s = String(val).trim();
   return s === '-' || s === '—' || s === '–' || s === 'N/A' || s === 'NA' || s === '';
 }
 
-// Determine which columns are "subject" columns (not metadata, not totals, not %)
 function getSubjectColumns(headers) {
   return headers.filter(h => {
     const header = String(h || '').trim();
@@ -758,15 +749,14 @@ function getSubjectColumns(headers) {
       !lowerH.includes('class section') &&
       !lowerH.includes('grand total') && !lowerH.includes('total') &&
       !lowerH.includes('column') &&
-      !lowerH.includes('+30') && !lowerH.includes('+ 30') && // Exclude +30 target columns
+      !lowerH.includes('+30') && !lowerH.includes('+ 30') &&
       !lowerH.includes('ix 100') && !lowerH.includes('eng 100 ix') &&
       !lowerH.includes('x target') && !lowerH.includes('analysis') &&
       !lowerH.includes('target') && !lowerH.includes(' ix') &&
-      hasTrailingMaxMarks; // Only actual marks columns like "English 80"
+      hasTrailingMaxMarks;
   });
 }
 
-// Get max marks for a subject from the header (e.g. "English  80" -> 80)
 function getMaxMarksFromHeader(header) {
   const match = header.match(/(\d+)\s*$/);
   return match ? parseInt(match[1]) : null;
@@ -817,7 +807,6 @@ function getContributingSubjectEntries(row, headers) {
   return exactMatch || entries;
 }
 
-// Recalculate Grand Total and % excluding not-opted subjects (dash/empty)
 function recalcGrandTotal(row, headers) {
   const totalCol = headers.find(h => h.toLowerCase().includes('grand total') || h.toLowerCase() === 'total');
   if (!totalCol) return row;
@@ -829,7 +818,6 @@ function recalcGrandTotal(row, headers) {
 
   row[totalCol] = hasAny ? sum : '';
 
-  // Do NOT overwrite baseline columns during recalculation
   return row;
 }
 
@@ -852,7 +840,6 @@ function extractStudentMetrics(row, headers, fallbackExamName = '') {
   const rawClass9 = toSafeNumber(class9Col ? row[class9Col] : null);
   const rawTarget = toSafeNumber(targetCol ? row[targetCol] : null);
 
-  // Scale baseline metrics if they are in decimal format (e.g., 0.59 -> 59.0)
   let class9Percent = rawClass9;
   if (class9Percent !== null && class9Percent > 0 && class9Percent < 2) {
     class9Percent = parseFloat((class9Percent * 100).toFixed(2));
@@ -863,7 +850,6 @@ function extractStudentMetrics(row, headers, fallbackExamName = '') {
     targetPercent = parseFloat((targetPercent * 100).toFixed(2));
   }
 
-  // Cap target at 100 as requested
   if (targetPercent !== null && targetPercent > 100) {
     targetPercent = 100;
   }
@@ -892,15 +878,23 @@ function extractStudentMetrics(row, headers, fallbackExamName = '') {
 }
 
 function buildWorkbookExamTimeline(sheetNames, sheets) {
+  const STAGE_ORDER = { 'BASELINE': 0, 'HY': 1, 'PB1': 2, 'PB2': 3, 'BOARD': 4, 'UNKNOWN': 5 };
+  
   return sheetNames
     .filter(name => sheets[name]?.rows?.length)
-    .map((name, index) => ({
-      id: `sheet-${index}-${name}`,
-      name,
-      date: '',
-      maxMarks: 100,
-      sheets: { [name]: sheets[name] },
-    }));
+    .map((name, index) => {
+      const headers = sheets[name].headers || [];
+      const stage = detectExamStage(sheets[name].meta?.examName || name, headers);
+      return {
+        id: `sheet-${index}-${name}`,
+        name,
+        stage,
+        date: '',
+        maxMarks: 100,
+        sheets: { [name]: sheets[name] },
+      };
+    })
+    .sort((a, b) => (STAGE_ORDER[a.stage] ?? 99) - (STAGE_ORDER[b.stage] ?? 99));
 }
 
 function buildStudentComparisonData(studentRow, activeHeaders, activeSheetName, sheetNames, sheets) {
@@ -955,7 +949,6 @@ function buildStudentComparisonData(studentRow, activeHeaders, activeSheetName, 
   };
 }
 
-// Compute analysis for a single sheet
 function computeSheetAnalysis(sheet) {
   if (!sheet || !sheet.rows || sheet.rows.length === 0) return null;
   const targetCol = findTargetColumn(sheet.headers);
@@ -996,7 +989,6 @@ function normalizeSheetForApp(sheet) {
   return { headers: sheet.headers, rows: validRows, meta: sheet.meta, validation: sheet.validation };
 }
 
-// Parse CSV text into headers + rows
 function parseCSV(text) {
   const lines = text.split(/\r?\n/).filter(l => l.trim());
   if (lines.length === 0) return null;
@@ -1078,7 +1070,6 @@ export default function App() {
   const importMoreRef = useRef(null);
   const pdfReportRef = useRef(null);
 
-  // ---------- TOAST SYSTEM ----------
   const removeToast = useCallback((id) => {
     setToasts(prev => prev.filter(t => t.id !== id));
   }, []);
@@ -1089,7 +1080,6 @@ export default function App() {
     if (duration > 0) setTimeout(() => removeToast(id), duration);
   }, [removeToast]);
 
-  // ---------- LOCALSTORAGE PERSISTENCE ----------
   useEffect(() => {
     try {
       const saved = localStorage.getItem(SESSION_STORAGE_KEY);
@@ -1121,7 +1111,6 @@ export default function App() {
     } catch (e) {
       console.warn('Failed to restore session:', e.message);
     }
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   useEffect(() => {
@@ -1178,7 +1167,6 @@ export default function App() {
     initDb();
   }, [API, fetchCumulativeData]);
 
-  // ---------- UPLOAD ----------
   const buildUniqueSheetName = useCallback((preferredName, usedNames) => {
     if (!usedNames.has(preferredName)) {
       usedNames.add(preferredName);
@@ -1446,7 +1434,6 @@ export default function App() {
     }
   }, [API, addToast, buildStructuredFiles, structuredUpload, structuredWorkflowMode]);
 
-  // ---------- EDIT CELLS ----------
   const startEdit = (sheetName, rowIdx, col) => {
     setEditingCell({ sheetName, rowIdx, col });
     setEditValue(sheets[sheetName].rows[rowIdx][col] ?? '');
@@ -1461,7 +1448,6 @@ export default function App() {
     const num = parseFloat(val);
     const finalVal = isNaN(num) || val === '' ? val : num;
 
-    // Push to undo history if value changed
     if (oldValue !== finalVal) {
       const newHistory = editHistory.slice(0, historyIndex + 1);
       newHistory.push({ sheetName, rowIdx, col, oldValue, newValue: finalVal });
@@ -1472,7 +1458,6 @@ export default function App() {
 
     updated[sheetName].rows[rowIdx][col] = finalVal;
 
-    // Recalculate Grand Total excluding not-opted subjects
     const row = updated[sheetName].rows[rowIdx];
     const headers = updated[sheetName].headers;
     recalcGrandTotal(row, headers);
@@ -1484,7 +1469,6 @@ export default function App() {
 
   const cancelEdit = () => setEditingCell(null);
 
-  // ---------- CREATE NEW WORKSPACE ----------
   const handleCreateTemplate = (config) => {
     const { className, numSections, subjects } = config;
     const newSheetNames = [];
@@ -1510,7 +1494,6 @@ export default function App() {
     setScreen('dashboard');
   };
 
-  // ---------- SAVE EXAM TO TIMELINE ----------
   const handleSaveExam = (examDetails) => {
     const newExam = {
       id: Date.now().toString(),
@@ -1525,7 +1508,6 @@ export default function App() {
     addToast('Exam saved to timeline!', 'success');
   };
 
-  // ---------- ADD / DELETE STUDENT ----------
   const addStudent = () => {
     if (!activeSheet || !sheets[activeSheet]) return;
     const updated = { ...sheets };
@@ -1545,7 +1527,6 @@ export default function App() {
     setSheets(updated);
   };
 
-  // ---------- ADD NEW SHEET ----------
   const addSheet = () => {
     const name = prompt('Enter new sheet name:');
     if (!name || sheetNames.includes(name)) return;
@@ -1558,7 +1539,6 @@ export default function App() {
     setActiveSheet(name);
   };
 
-  // ---------- ANALYSIS ----------
   const analysisData = useMemo(() => {
     const selected = analysisSheets.filter(s => sheets[s]);
     const sums = {};
@@ -1599,7 +1579,6 @@ export default function App() {
     return { sections: selected, rows, headers: ['Range', ...selected, 'students', 'per%'] };
   }, [analysisSheets, sheets]);
 
-  // Subject-wise section comparison data
   const subjectComparison = useMemo(() => {
     const selected = analysisSheets.filter(s => sheets[s]);
     if (selected.length === 0) return null;
@@ -1616,7 +1595,6 @@ export default function App() {
         let sum = 0, count = 0;
         for (const student of sheet.rows) {
           const val = student[subject];
-          // Skip not-opted subjects
           if (isNotOpted(val)) continue;
           const v = parseFloat(val);
           if (!isNaN(v)) { sum += v; count++; }
@@ -1629,13 +1607,10 @@ export default function App() {
     return { data, sections: selected, subjects: subjectCols };
   }, [analysisSheets, sheets]);
 
-  // ---------- STUDENT REPORT ----------
   const openStudentReport = (row) => {
     setStudentReport(row);
   };
 
-  // ---------- EXPORT EXCEL ----------
-  // Charts are generated automatically on the server — no need to capture from UI
   const exportExcel = async () => {
     setLoading(true);
     try {
@@ -1666,7 +1641,6 @@ export default function App() {
     setLoading(false);
   };
 
-  // ---------- EXPORT CSV ----------
   const exportCSV = () => {
     if (!effectiveCurrentSheet) return;
     const headers = effectiveCurrentSheet.headers;
@@ -1688,10 +1662,8 @@ export default function App() {
     addToast('CSV exported successfully!', 'success');
   };
 
-  // ---------- EXPORT PDF ----------
   const exportPDF = async () => {
     setPdfExporting(true);
-    // Wait for the hidden PDF content to render with charts
     await new Promise(r => setTimeout(r, 1500));
 
     try {
@@ -1725,14 +1697,12 @@ export default function App() {
         const ratio = usableWidth / imgWidth;
         const scaledHeight = imgHeight * ratio;
 
-        // If not first page and it doesn't fit, add new page
         if (!isFirstPage && currentY + scaledHeight > pageHeight - margin) {
           pdf.addPage();
           currentY = margin;
         }
 
         const imgData = canvas.toDataURL('image/png');
-        // If a single block is somehow taller than a whole page, we might still have to slice it
         if (scaledHeight > pageHeight - (margin * 2)) {
           let remainingHeight = imgHeight;
           let sourceY = 0;
@@ -1750,20 +1720,19 @@ export default function App() {
             const scaledSliceHeight = sliceHeight * ratio;
 
             if (sourceY > 0) pdf.addPage();
-            // Use currentY for the first overflowing chunk, then margin for subsequent
             const drawY = sourceY === 0 ? currentY : margin;
             pdf.addImage(sliceData, 'PNG', margin, drawY, usableWidth, scaledSliceHeight);
 
             sourceY += sliceHeight;
             remainingHeight -= sliceHeight;
-            if (sourceY === sliceHeight) { // just drew the first chunk
+            if (sourceY === sliceHeight) {
               currentY = drawY + scaledSliceHeight;
             }
           }
-          currentY = margin; // reset for next block since we likely spilled over
+          currentY = margin;
         } else {
           pdf.addImage(imgData, 'PNG', margin, currentY, usableWidth, scaledHeight);
-          currentY += scaledHeight + 10; // 10mm gap between blocks
+          currentY += scaledHeight + 10;
         }
         isFirstPage = false;
       }
@@ -1776,7 +1745,6 @@ export default function App() {
     setPdfExporting(false);
   };
 
-  // ---------- RESET ----------
   const resetAll = () => {
     if (!confirm('Reset everything? All changes will be lost.')) return;
     setScreen('upload');
@@ -1896,7 +1864,6 @@ export default function App() {
   const isCumulativeView = PHASE_ONE_CUMULATIVE_ONLY ? true : activeSheet === CUMULATIVE_SHEET_NAME;
   const totalStudents = effectiveCurrentSheet ? effectiveCurrentSheet.rows.length : 0;
 
-  // ---------- SEARCH & FILTER ----------
   const filteredRows = useMemo(() => {
     if (!effectiveCurrentSheet) return [];
     if (!searchQuery.trim()) return effectiveCurrentSheet.rows;
@@ -1908,7 +1875,6 @@ export default function App() {
     });
   }, [effectiveCurrentSheet, searchQuery]);
 
-  // ---------- SORT ----------
   const handleSort = (key) => {
     setSortConfig(prev => {
       if (prev.key === key) {
@@ -1939,7 +1905,6 @@ export default function App() {
     return rows;
   }, [filteredRows, sortConfig]);
 
-  // ---------- UNDO/REDO ----------
   const undo = useCallback(() => {
     if (historyIndex < 0 || editHistory.length === 0) return;
     const entry = editHistory[historyIndex];
@@ -1968,7 +1933,6 @@ export default function App() {
     }
   }, [historyIndex, editHistory, sheets, addToast]);
 
-  // Keyboard shortcuts for undo/redo
   useEffect(() => {
     const handleKeyDown = (e) => {
       if ((e.ctrlKey || e.metaKey) && e.key === 'z' && !e.shiftKey) {
@@ -1984,7 +1948,6 @@ export default function App() {
     return () => window.removeEventListener('keydown', handleKeyDown);
   }, [undo, redo]);
 
-  // ---------- CLASS STATS ----------
   const classStats = useMemo(() => {
     if (!effectiveCurrentSheet || effectiveCurrentSheet.rows.length === 0) return null;
     const totalCol = effectiveCurrentSheet.headers.find(h => h.toLowerCase().includes('grand total') || h.toLowerCase() === 'total');
@@ -1994,28 +1957,23 @@ export default function App() {
     const percentCol = cumulativeScoreCol || findTargetColumn(effectiveCurrentSheet.headers);
     const nameCol = effectiveCurrentSheet.headers.find(h => h.toLowerCase().includes('name') && !h.toLowerCase().includes('father') && !h.toLowerCase().includes('mother'));
 
-    // Use percentage column for average; fall back to totalCol
     const avgCol = percentCol || totalCol;
     if (!avgCol) return null;
 
-    // For ranking/top/bottom, prefer totalCol (raw marks), fall back to avgCol
     const rankCol = totalCol || avgCol;
 
     const scored = effectiveCurrentSheet.rows.filter(r => !isNaN(parseFloat(r[rankCol])) && parseFloat(r[rankCol]) > 0);
     if (scored.length === 0) return null;
 
-    // Average uses percentage column
     const avgScores = scored.filter(r => !isNaN(parseFloat(r[avgCol]))).map(r => parseFloat(r[avgCol]));
     const avg = avgScores.length > 0 ? avgScores.reduce((a, b) => a + b, 0) / avgScores.length : 0;
 
-    // Top/bottom uses rank column (Grand Total)
     const rankScores = scored.map(r => parseFloat(r[rankCol]));
     const maxScore = Math.max(...rankScores);
     const minScore = Math.min(...rankScores);
     const topStudent = scored.find(r => parseFloat(r[rankCol]) === maxScore);
     const bottomStudent = scored.find(r => parseFloat(r[rankCol]) === minScore);
 
-    // Rank students by total (descending)
     const ranked = [...scored].sort((a, b) => parseFloat(b[rankCol]) - parseFloat(a[rankCol]));
     const rankMap = new Map();
     ranked.forEach((r, i) => rankMap.set(r, i + 1));
@@ -2031,12 +1989,10 @@ export default function App() {
     };
   }, [effectiveCurrentSheet, isCumulativeView]);
 
-  // ========== RENDER ==========
   return (
     <div className="app-wrapper">
       <div className="app-bg" />
 
-      {/* ===== UPLOAD SCREEN ===== */}
       {screen === 'upload' && (
         <div className="main-card fade-in upload-card">
           <div className="card-icon"><FileSpreadsheet size={48} strokeWidth={1.5} /></div>
@@ -2061,11 +2017,10 @@ export default function App() {
               onSubmit={handleStructuredSubmit}
             />
           </div>
-          <div className="info-bar"><Info size={16} /><span>Phase 1 focuses only on a validated cumulative sheet. Exports, graphs, and advanced reports stay hidden until cumulative accuracy is stable.</span></div>
+
         </div>
       )}
 
-      {/* ===== CREATE MODAL ===== */}
       {showCreateModal && (
         <CreateTemplateModal
           onClose={() => setShowCreateModal(false)}
@@ -2073,7 +2028,6 @@ export default function App() {
         />
       )}
 
-      {/* ===== EXAM MANAGER MODAL ===== */}
       {showExamManager && (
         <ExamManagerModal
           onClose={() => setShowExamManager(false)}
@@ -2081,7 +2035,6 @@ export default function App() {
         />
       )}
 
-      {/* ===== PROGRESS TRACKER SCREEN ===== */}
       {screen === 'progress' && (
         <ProgressTracker
           examTimeline={examTimeline}
@@ -2091,7 +2044,6 @@ export default function App() {
         />
       )}
 
-      {/* ===== DASHBOARD ===== */}
       {screen === 'dashboard' && (
         <div className="main-card fade-in dashboard-card">
           <div className="dash-header">
@@ -2172,12 +2124,6 @@ export default function App() {
                   {searchQuery && <button className="search-clear" onClick={() => setSearchQuery('')}><X size={14} /></button>}
                 </div>
               </div>
-
-              {/* Quick Stats Bar (omitted for brevity in this replace call, but keeping logic) */}
-              {dbEnabled && (
-                /* ... cumulative database overview ... */
-                null // I'll keep the actual code if possible but the replace tool needs exact match
-              )}
 
               {cumulativeSheet && (
                 <div style={{ marginBottom: '1rem', padding: '0.9rem 1rem', borderRadius: '16px', background: 'rgba(16,185,129,0.08)', border: '1px solid rgba(16,185,129,0.14)' }}>
@@ -2339,7 +2285,6 @@ export default function App() {
         </div>
       )}
 
-      {/* ===== STUDENT REPORT MODAL ===== */}
       {!PHASE_ONE_CUMULATIVE_ONLY && studentReport && (
         <StudentReportModal
           student={studentReport}
@@ -2351,7 +2296,6 @@ export default function App() {
         />
       )}
 
-      {/* ===== HIDDEN PDF REPORT CONTENT ===== */}
       {!PHASE_ONE_CUMULATIVE_ONLY && pdfExporting && (
         <div style={{ position: 'fixed', left: '-9999px', top: 0, zIndex: -1 }}>
           <PDFReportContent
@@ -2365,7 +2309,6 @@ export default function App() {
         </div>
       )}
 
-      {/* ===== TOAST CONTAINER ===== */}
       <div className="toast-container">
         {toasts.map(toast => (
           <div key={toast.id} className={`toast toast-${toast.type}`}>
@@ -2625,7 +2568,6 @@ function StructuredUploadPanel({ loading, workflowMode, setWorkflowMode, structu
   );
 }
 
-// ========== ANALYSIS PANEL ==========
 function AnalysisPanel({ data, subjectComparison, sheets, selected, setSelected, onClose }) {
   const toggleSheet = (name) => {
     setSelected(prev => prev.includes(name) ? prev.filter(s => s !== name) : [...prev, name]);
@@ -2655,7 +2597,6 @@ function AnalysisPanel({ data, subjectComparison, sheets, selected, setSelected,
         ))}
       </div>
 
-      {/* Charts */}
       <div className="chart-box" id="section-analysis-charts" style={{ padding: '2rem 1.5rem', background: '#fff' }}>
         <h4 style={{ marginBottom: '1.5rem', color: 'var(--text)', borderBottom: '1px solid var(--border)', paddingBottom: '0.75rem', fontSize: '1rem' }}>
           {data.sections.map(s => s.replace(/^X\s*/, 'X-')).join(', ')} — Performance Visuals
@@ -2738,7 +2679,6 @@ function AnalysisPanel({ data, subjectComparison, sheets, selected, setSelected,
         </div>
       </div>
 
-      {/* Table */}
       <div className="table-container">
         <table className="data-table analysis-tbl">
           <thead>
@@ -2763,7 +2703,6 @@ function AnalysisPanel({ data, subjectComparison, sheets, selected, setSelected,
   );
 }
 
-// ========== PER-SHEET ANALYSIS ==========
 function SheetAnalysis({ sheetName, sheet }) {
   const analysis = useMemo(() => computeSheetAnalysis(sheet), [sheet]);
   if (!analysis) return null;
@@ -2809,8 +2748,8 @@ function SheetAnalysis({ sheetName, sheet }) {
                 {chartData.map((entry, i) => (
                   <Cell key={i} fill={entry.color} />
                 ))}
-              </Bar>
-            </BarChart>
+              </BarChart>
+            </ResponsiveContainer>
           </ResponsiveContainer>
         </div>
       </div>
@@ -2818,11 +2757,9 @@ function SheetAnalysis({ sheetName, sheet }) {
   );
 }
 
-// ========== PDF REPORT CONTENT (hidden, for export) ==========
 const PDFReportContent = React.forwardRef(function PDFReportContent({ fileName, sheetNames, sheets, analysisData, subjectComparison }, ref) {
   const PIE_COLORS = ['#22c55e', '#3b82f6', '#8b5cf6', '#f59e0b', '#f97316', '#ef4444'];
 
-  // Per-sheet analysis
   const sheetAnalyses = sheetNames.map(name => {
     const sheet = sheets[name];
     if (!sheet) return null;
@@ -2837,13 +2774,11 @@ const PDFReportContent = React.forwardRef(function PDFReportContent({ fileName, 
 
   return (
     <div ref={ref} style={{ width: '1050px', padding: '40px', background: '#fff', fontFamily: 'Inter, system-ui, sans-serif', color: '#1e293b' }}>
-      {/* Title */}
       <div className="pdf-page-block" style={{ textAlign: 'center', marginBottom: '15px', borderBottom: '3px solid #6366f1', paddingBottom: '20px' }}>
         <h1 style={{ fontSize: '24px', fontWeight: 700, color: '#1e293b', margin: 0 }}>📊 Target Analysis Report</h1>
         <p style={{ fontSize: '14px', color: '#64748b', margin: '8px 0 0' }}>{fileName} • Generated on {new Date().toLocaleDateString('en-IN', { year: 'numeric', month: 'long', day: 'numeric' })}</p>
       </div>
 
-      {/* Per-Sheet Analysis */}
       {sheetAnalyses.map((sa) => (
         <div key={sa.name} className="pdf-page-block" style={{ marginBottom: '15px', padding: '10px 0' }}>
           <h2 style={{ fontSize: '16px', fontWeight: 700, color: '#4f46e5', marginBottom: '12px', borderLeft: '4px solid #6366f1', paddingLeft: '10px' }}>
@@ -2883,7 +2818,6 @@ const PDFReportContent = React.forwardRef(function PDFReportContent({ fileName, 
         </div>
       ))}
 
-      {/* Section Comparison */}
       {analysisData && analysisData.sections.length > 0 && (
         <div style={{ marginTop: '10px' }}>
           <div className="pdf-page-block" style={{ marginBottom: '15px', padding: '10px 0' }}>
@@ -2891,7 +2825,6 @@ const PDFReportContent = React.forwardRef(function PDFReportContent({ fileName, 
               📈 Cumulative Section-wise Analysis
             </h2>
 
-            {/* Comparison Table */}
             <table style={{ borderCollapse: 'collapse', fontSize: '13px', width: '100%', marginBottom: '25px' }}>
               <thead>
                 <tr>
@@ -2914,7 +2847,6 @@ const PDFReportContent = React.forwardRef(function PDFReportContent({ fileName, 
             </table>
           </div>
 
-          {/* Charts grid */}
           <div className="pdf-page-block" style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '25px', marginBottom: '15px', padding: '10px 0' }}>
             <div>
               <h3 style={{ fontSize: '13px', fontWeight: 600, color: '#475569', textAlign: 'center', marginBottom: '8px' }}>Section-wise Bar Comparison</h3>
@@ -2978,7 +2910,6 @@ const PDFReportContent = React.forwardRef(function PDFReportContent({ fileName, 
         </div>
       )}
 
-      {/* Footer */}
       <div className="pdf-page-block" style={{ textAlign: 'center', fontSize: '11px', color: '#94a3b8', borderTop: '1px solid #e2e8f0', paddingTop: '15px', marginTop: '15px' }}>
         <p>Auto-generated by Target Analysis Report Generator • Subjects marked with "-" are excluded from totals & charts</p>
       </div>
@@ -2986,7 +2917,6 @@ const PDFReportContent = React.forwardRef(function PDFReportContent({ fileName, 
   );
 });
 
-// ========== STUDENT REPORT MODAL ==========
 function StudentReportModal({ student, headers, sheetName, sheetNames, sheets, onClose }) {
   const [downloading, setDownloading] = useState(false);
   const reportRef = useRef(null);
@@ -3034,7 +2964,6 @@ function StudentReportModal({ student, headers, sheetName, sheetNames, sheets, o
       !h.toLowerCase().includes('target');
   });
 
-  // PDF Download
   const downloadPDF = async () => {
     if (!reportRef.current) return;
     setDownloading(true);
@@ -3112,13 +3041,11 @@ function StudentReportModal({ student, headers, sheetName, sheetNames, sheets, o
         </div>
 
         <div ref={reportRef} className="pdf-content">
-          {/* Report Header */}
           <div className="pdf-header">
             <h2 className="pdf-title">Student Performance Report</h2>
             <p className="pdf-subtitle">{sheetName} • Generated on {new Date().toLocaleDateString('en-IN', { year: 'numeric', month: 'long', day: 'numeric' })}</p>
           </div>
 
-          {/* Student Info Bar */}
           <div className="report-name-bar">
             <div className="student-avatar">{name?.charAt(0)}</div>
             <div>
@@ -3185,7 +3112,6 @@ function StudentReportModal({ student, headers, sheetName, sheetNames, sheets, o
             </div>
           )}
 
-          {/* Student Details */}
           {metaFields.length > 0 && (
             <div className="report-section">
               <h4 className="report-section-title">📋 Student Details</h4>
@@ -3203,7 +3129,6 @@ function StudentReportModal({ student, headers, sheetName, sheetNames, sheets, o
             </div>
           )}
 
-          {/* Opted Subjects - Score Matrix */}
           {optedSubjects.length > 0 && (
             <div className="report-section">
               <h4 className="report-section-title">📊 Subject Scores (Opted Subjects Only)</h4>
@@ -3285,7 +3210,6 @@ function StudentReportModal({ student, headers, sheetName, sheetNames, sheets, o
             </div>
           )}
 
-          {/* Not-opted Subjects */}
           {notOptedSubjects.length > 0 && (
             <div className="report-section">
               <h4 className="report-section-title" style={{ color: 'var(--text-secondary)', fontSize: '0.85rem' }}>
@@ -3299,7 +3223,6 @@ function StudentReportModal({ student, headers, sheetName, sheetNames, sheets, o
             </div>
           )}
 
-          {/* Subject Bar Chart */}
           {barData.length > 0 && (
             <div className="report-section">
               <h4 className="report-section-title">📈 Subject-wise Score Chart</h4>
@@ -3319,7 +3242,6 @@ function StudentReportModal({ student, headers, sheetName, sheetNames, sheets, o
             </div>
           )}
 
-          {/* Radar Chart */}
           {radarData.length >= 3 && (
             <div className="report-section">
               <h4 className="report-section-title">🎯 Performance Radar</h4>
@@ -3337,7 +3259,6 @@ function StudentReportModal({ student, headers, sheetName, sheetNames, sheets, o
             </div>
           )}
 
-          {/* Footer */}
           <div className="pdf-footer">
             <p>This report was auto-generated by the Target Analysis Report Generator.</p>
             <p>Class 9 marks, Class 10 target, and exam-wise progress are shown separately for clearer comparison.</p>
@@ -3348,7 +3269,6 @@ function StudentReportModal({ student, headers, sheetName, sheetNames, sheets, o
   );
 }
 
-// ========== CREATE TEMPLATE MODAL ==========
 function CreateTemplateModal({ onClose, onCreate }) {
   const [className, setClassName] = useState('Class X');
   const [numSections, setNumSections] = useState(5);
@@ -3418,7 +3338,6 @@ function CreateTemplateModal({ onClose, onCreate }) {
   );
 }
 
-// ========== EXAM MANAGER MODAL ==========
 function ExamManagerModal({ onClose, onSave }) {
   const [examName, setExamName] = useState('Unit Test 1');
   const [examDate, setExamDate] = useState(new Date().toISOString().slice(0, 10));
@@ -3474,7 +3393,6 @@ function ExamManagerModal({ onClose, onSave }) {
   );
 }
 
-// ========== PROGRESS TRACKER SCREEN ==========
 function ProgressTracker({ examTimeline, onBack, currentSheets, sheetNames }) {
   const [selectedStudent, setSelectedStudent] = useState(null);
   const [searchQuery, setSearchQuery] = useState('');
@@ -3483,10 +3401,8 @@ function ProgressTracker({ examTimeline, onBack, currentSheets, sheetNames }) {
     return buildWorkbookExamTimeline(sheetNames, currentSheets);
   }, [examTimeline, sheetNames, currentSheets]);
 
-  // Extract all unique students from the latest/current sheets
   const allStudents = useMemo(() => {
     const map = new Map();
-    // Use currentSheets as base
     Object.values(currentSheets).forEach(sheet => {
       sheet.rows.forEach(row => {
         const nameCol = sheet.headers.find(h => h.toLowerCase().includes('name') && !h.toLowerCase().includes('father') && !h.toLowerCase().includes('mother'));
@@ -3529,9 +3445,9 @@ function ProgressTracker({ examTimeline, onBack, currentSheets, sheetNames }) {
           <button className="btn-primary" onClick={onBack} style={{ margin: '1.5rem auto 0', display: 'flex' }}>Go Back Dashboard</button>
         </div>
       ) : (
-        <div style={{ display: 'grid', gridTemplateColumns: '300px 1fr', gap: '2rem', marginTop: '1rem' }}>
-          <div style={{ borderRight: '1px solid var(--border)', paddingRight: '1rem' }}>
-            <h4 style={{ marginBottom: '1rem', display: 'flex', alignItems: 'center', gap: '0.5rem' }}><Users size={18} /> Select Student</h4>
+        <div className="progress-tracker-container fade-in">
+          <div className="progress-tracker-sidebar">
+            <h4 className="sidebar-title">Students</h4>
             <div className="search-box" style={{ width: '100%', marginBottom: '1rem' }}>
               <Search size={15} className="search-icon" />
               <input className="search-input" style={{ width: '100%' }} placeholder="Search name..." value={searchQuery} onChange={e => setSearchQuery(e.target.value)} />
@@ -3558,7 +3474,7 @@ function ProgressTracker({ examTimeline, onBack, currentSheets, sheetNames }) {
             </div>
           </div>
           
-          <div>
+          <div className="progress-tracker-content">
             {selectedStudent ? (
               <StudentProgressView student={selectedStudent} timeline={effectiveTimeline} currentSheets={currentSheets} />
             ) : (
@@ -3650,7 +3566,7 @@ function StudentProgressView({ student, timeline, currentSheets }) {
         </div>
       </div>
       
-      <div style={{ display: 'grid', gridTemplateColumns: 'minmax(0,1fr) minmax(0,1fr)', gap: '1.5rem', marginBottom: '2rem' }}>
+      <div className="chart-grid">
         <div className="chart-inner-box">
           <h5 className="chart-subtitle">Overall Progress vs Target</h5>
           <ResponsiveContainer width="100%" height={250}>
@@ -3673,34 +3589,36 @@ function StudentProgressView({ student, timeline, currentSheets }) {
         
         <div className="chart-inner-box" style={{ overflowY: 'auto', maxHeight: '315px' }}>
           <h5 className="chart-subtitle">Exams Summary</h5>
-          <table className="data-table">
-            <thead>
-               <tr>
-                 <th>Exam</th>
-                 <th>Score</th>
-                 <th>%</th>
-                 <th>Target</th>
-                 <th>Status</th>
-               </tr>
-            </thead>
-            <tbody>
-              {progressData.map((d, i) => (
-                <tr key={i}>
-                  <td>{d.examName}</td>
-                  <td>{d.obtained} / {d.max}</td>
-                  <td className={getScoreColor(d.overallPercent)}>{d.overallPercent}%</td>
-                  <td>{d.targetPercent ?? '—'}{d.targetPercent !== null ? '%' : ''}</td>
-                  <td>
-                    {d.targetPercent !== null && d.overallPercent >= d.targetPercent
-                      ? 'Achieved Target'
-                      : d.class9Percent !== null && d.overallPercent > d.class9Percent
-                        ? 'Improving'
-                        : 'Below Target'}
-                  </td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
+          <div className="table-responsive">
+            <table className="data-table">
+              <thead>
+                 <tr>
+                   <th>Exam</th>
+                   <th>Score</th>
+                   <th>%</th>
+                   <th>Target</th>
+                   <th>Status</th>
+                 </tr>
+              </thead>
+              <tbody>
+                {progressData.map((d, i) => (
+                  <tr key={i}>
+                    <td>{d.examName}</td>
+                    <td>{d.obtained} / {d.max}</td>
+                    <td className={getScoreColor(d.overallPercent)}>{d.overallPercent}%</td>
+                    <td>{d.targetPercent ?? '—'}{d.targetPercent !== null ? '%' : ''}</td>
+                    <td>
+                      {d.targetPercent !== null && d.overallPercent >= d.targetPercent
+                        ? 'Achieved Target'
+                        : d.class9Percent !== null && d.overallPercent > d.class9Percent
+                          ? 'Improving'
+                          : 'Below Target'}
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
         </div>
       </div>
       
