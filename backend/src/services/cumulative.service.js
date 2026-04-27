@@ -8,6 +8,7 @@ const {
   normalizeIdentifier,
   normalizeStudentName,
   resolveRowSection,
+  getStudentKey,
 } = require('./parser.service');
 
 function buildEmptyCumulativeReport() {
@@ -567,7 +568,7 @@ function buildWorkbookCumulativeResult(sheetNames = [], sheets = {}) {
       };
     }
 
-    if (examStage === 'BASELINE') {
+    if (examStage === 'BASELINE' || examStage === 'UNKNOWN') {
       const compactSectionMatch = resolveUniqueStudentKeyBySectionAndCompactName(identity.section, identity.compactName);
       if (compactSectionMatch) {
         return {
@@ -709,7 +710,8 @@ function buildWorkbookCumulativeResult(sheetNames = [], sheets = {}) {
     if (!sheet?.rows?.length) return false;
     const headers = sheet.headers || [];
     const examStage = detectExamStage(sheet.meta?.examName || sheetName, headers);
-    return examStage !== 'BASELINE' && examStage !== 'BOARD' && Boolean(findEnrollmentColumn(headers));
+    // Allow BASELINE sheets to be anchors so that all students in the master target sheet are included in the report
+    return examStage !== 'BOARD' && Boolean(findEnrollmentColumn(headers));
   });
 
   const fallbackAnchorSheetNames = anchorSheetNames.length
@@ -765,21 +767,28 @@ function buildWorkbookCumulativeResult(sheetNames = [], sheets = {}) {
     sheet.rows.forEach((row) => {
       const identity = computeStudentIdentity(row, sheet, sheetName, examStage);
       const metrics = extractStudentMetrics(row, headers, sheet.meta?.examName || sheetName);
+      
       const resolution = resolveStudentMatch(identity, examStage);
       const { studentKey, baselineMatchQuality } = resolution;
+      
       if (examStage === 'BASELINE') {
         recordBaselineMatch(identity, metrics, resolution);
       }
-      if (!studentKey) return;
+      
+      // We use getOrCreateStudent to ensure that students from non-anchor sheets (if any) 
+      // are also included, and that preferred names/sections are captured.
+      const primaryKey = studentKey || getStudentKey(row, headers);
+      if (!primaryKey) return;
 
-      const existing = getOrCreateStudent(studentKey, identity);
-      registerStudentName(studentKey, identity);
+      const existing = getOrCreateStudent(primaryKey, identity);
+      registerStudentName(primaryKey, identity);
+      
       if (examStage === 'BASELINE') {
         applyBaselineMetrics(existing, metrics, baselineMatchQuality);
       } else {
         applyStageMetrics(existing, examStage, metrics);
       }
-      students.set(studentKey, existing);
+      students.set(primaryKey, existing);
     });
   });
 

@@ -114,27 +114,75 @@ function findAdmissionColumn(headers) {
     return lower.includes('admn') || lower.includes('admission') || lower.includes('adm no') ||
       lower.includes('admission no') || lower.includes('enroll no') ||
       lower.includes('enrollment') || lower.includes('enrolment') ||
-      lower.includes('reg no') || lower.includes('registration no') || lower.includes('roll no');
+      lower.includes('reg no') || lower.includes('registration no') || lower.includes('roll no') ||
+      lower.includes('scholar no') || lower.includes('sch no') || lower.includes('student id');
   }) || null;
 }
 
 function findClass9Column(headers) {
+  const priorities = [
+    '% in IX', 'IX %', 'Class IX %', 'Class 9 %', 'IX Percentage', '9th %', 'Class 9th %',
+    'IX 100', 'IX (100)', 'Percentage in IX', 'IX Percent', '9th Percentage'
+  ];
+  
+  for (const p of priorities) {
+    const found = headers.find(h => {
+      const lower = String(h || '').toLowerCase().replace(/\s+/g, ' ').trim();
+      return lower === p.toLowerCase();
+    });
+    if (found) return found;
+  }
+
   return headers.find(h => {
-    const lower = h.toLowerCase();
-    return (lower.includes('% in ix') || lower.includes('ix %') || lower.includes('class 9')) &&
-      !lower.includes('+30') && !lower.includes('target');
+    const lower = String(h || '').toLowerCase().replace(/\s+/g, ' ').trim();
+    const isBaseline = (
+      lower.includes('% in ix') || 
+      lower.includes('ix %') || 
+      lower.includes('class 9') || 
+      lower.includes('class ix') ||
+      lower.includes('9th class') || 
+      lower.includes('ix percent') || 
+      lower.includes('ix marks') || 
+      lower.includes('baseline') ||
+      lower.includes('class ix %') ||
+      lower.includes('class 9 %') ||
+      lower.includes('class 9th %') ||
+      lower.includes('ix percentage') ||
+      lower.includes('ix 100') ||
+      lower.includes('ix 80') ||
+      lower.includes('ix (100)') ||
+      lower.includes('ix (80)') ||
+      lower.includes('percentage in ix') ||
+      lower.includes('percent in ix') ||
+      (lower.includes('9th') && (lower.includes('%') || lower.includes('percentage') || lower.includes('marks'))) ||
+      (lower.includes('ix') && (lower.includes('%') || lower.includes('percentage') || lower.includes('score') || lower.includes('marks')))
+    );
+    const isTarget = lower.includes('+30') || lower.includes('target') || lower.includes('+ 30') || lower.includes('projected') || lower.includes('improvement');
+    return isBaseline && !isTarget;
   }) || null;
 }
 
 function findTarget100Column(headers) {
-  const priorities = ['% in IX+30', 'X Target', 'Target', 'Class X Target'];
+  const priorities = [
+    '% in IX+30', 'X Target', 'Target', 'Class X Target', 'Target %', 
+    'Target Percentage', 'IX+30', 'IX + 30', 'IX +30', 'IX+ 30',
+    'X TARGET %', 'X TARGET PERCENTAGE', 'Target 100', 'X 100',
+    'Projected %', 'Projected Target'
+  ];
   for (const col of priorities) {
-    const found = headers.find(h => h && h.toString().trim().toLowerCase() === col.toLowerCase());
+    const found = headers.find(h => {
+      if (!h) return false;
+      const normalized = String(h).trim().toLowerCase().replace(/\s+/g, ' ');
+      return normalized === col.toLowerCase();
+    });
     if (found) return found;
   }
+
   return headers.find(h => {
-    const lower = h.toLowerCase();
-    return lower.includes('target') || lower.includes('+30');
+    const lower = String(h || '').toLowerCase().replace(/\s+/g, ' ');
+    const hasTarget = lower.includes('target') || lower.includes('+30') || lower.includes('+ 30') || lower.includes('projected');
+    const isIxBaselineOnly = (lower.includes('ix') || lower.includes('9th')) && !lower.includes('+30') && !lower.includes('+ 30') && !lower.includes('target') && !lower.includes('projected');
+    return hasTarget && !isIxBaselineOnly;
   }) || null;
 }
 
@@ -263,14 +311,25 @@ function detectSheetMeta(sheetName, headers = [], rows = [], sourceFileName = ''
 function detectExamStage(sheetName, headers = []) {
   const combined = `${sheetName} ${headers.join(' ')}`.toLowerCase();
   const normalizedCombined = combined.replace(/[^a-z0-9]+/g, ' ').trim();
+  
+  if (normalizedCombined.includes('cbse result') || 
+      (normalizedCombined.includes('cbse') && normalizedCombined.includes('result')) || 
+      normalizedCombined.includes('all subject wise report') ||
+      normalizedCombined.includes('board result') ||
+      normalizedCombined.includes('final result')) {
+    return 'BOARD';
+  }
+  if (/\bboard\b/.test(normalizedCombined)) return 'BOARD';
+
+  if (normalizedCombined.includes('half yearly') || normalizedCombined.includes('halfyearly') || /\bhy\b/.test(normalizedCombined)) return 'HY';
+  if (normalizedCombined.includes('preboard 2') || normalizedCombined.includes('pre board 2') || normalizedCombined.includes('preboard ii') || normalizedCombined.includes('pre board ii') || /\bpb2\b/.test(normalizedCombined)) return 'PB2';
+  if (normalizedCombined.includes('preboard 1') || normalizedCombined.includes('pre board 1') || normalizedCombined.includes('preboard i') || normalizedCombined.includes('pre board i') || /\bpb1\b/.test(normalizedCombined)) return 'PB1';
+
   const class9Col = findClass9Column(headers);
   const targetCol = findTarget100Column(headers);
   if (class9Col && targetCol) return 'BASELINE';
   if (normalizedCombined.includes('target sheet') || normalizedCombined.includes('baseline') || normalizedCombined.includes('class 9 target')) return 'BASELINE';
-  if (normalizedCombined.includes('half yearly') || normalizedCombined.includes('halfyearly') || /\bhy\b/.test(normalizedCombined)) return 'HY';
-  if (normalizedCombined.includes('preboard 1') || normalizedCombined.includes('pre board 1') || /\bpb1\b/.test(normalizedCombined)) return 'PB1';
-  if (normalizedCombined.includes('preboard 2') || normalizedCombined.includes('pre board 2') || /\bpb2\b/.test(normalizedCombined)) return 'PB2';
-  if (/\bboard\b/.test(normalizedCombined)) return 'BOARD';
+  
   return 'UNKNOWN';
 }
 

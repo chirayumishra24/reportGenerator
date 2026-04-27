@@ -61,7 +61,8 @@ function findAdmissionColumn(headers) {
     return lower.includes('admn') || lower.includes('admission') || lower.includes('adm no') ||
       lower.includes('admission no') || lower.includes('enroll no') ||
       lower.includes('enrollment') || lower.includes('enrolment') ||
-      lower.includes('reg no') || lower.includes('registration no') || lower.includes('roll no');
+      lower.includes('reg no') || lower.includes('registration no') || lower.includes('roll no') ||
+      lower.includes('scholar no') || lower.includes('sch no') || lower.includes('student id');
   }) || null;
 }
 
@@ -71,39 +72,70 @@ function toSafeNumber(value) {
 }
 
 function findClass9Column(headers) {
+  const priorities = [
+    '% in IX', 'IX %', 'Class IX %', 'Class 9 %', 'IX Percentage', '9th %', 'Class 9th %',
+    'IX 100', 'IX (100)', 'Percentage in IX', 'IX Percent', '9th Percentage'
+  ];
+  
+  for (const p of priorities) {
+    const found = headers.find(h => {
+      const normalized = String(h || '').trim().toLowerCase().replace(/\s+/g, ' ');
+      return normalized === p.toLowerCase();
+    });
+    if (found) return found;
+  }
+
   return headers.find(h => {
-    const lower = String(h || '').toLowerCase();
+    const lower = String(h || '').toLowerCase().replace(/\s+/g, ' ').trim();
     const isBaseline = (
       lower.includes('% in ix') || 
       lower.includes('ix %') || 
       lower.includes('class 9') || 
+      lower.includes('class ix') ||
       lower.includes('9th class') || 
       lower.includes('ix percent') || 
       lower.includes('ix marks') || 
       lower.includes('baseline') ||
-      (lower.includes('9th') && (lower.includes('%') || lower.includes('percentage')))
+      lower.includes('class ix %') ||
+      lower.includes('class 9 %') ||
+      lower.includes('class 9th %') ||
+      lower.includes('ix percentage') ||
+      lower.includes('ix 100') ||
+      lower.includes('ix 80') ||
+      lower.includes('ix (100)') ||
+      lower.includes('ix (80)') ||
+      lower.includes('percentage in ix') ||
+      lower.includes('percent in ix') ||
+      (lower.includes('9th') && (lower.includes('%') || lower.includes('percentage') || lower.includes('marks'))) ||
+      (lower.includes('ix') && (lower.includes('%') || lower.includes('percentage') || lower.includes('score') || lower.includes('marks')))
     );
-    return isBaseline && !lower.includes('+30') && !lower.includes('target');
+    // Crucially exclude target/plus-30 columns that also mention IX
+    const isTarget = lower.includes('+30') || lower.includes('target') || lower.includes('+ 30') || lower.includes('projected') || lower.includes('improvement');
+    return isBaseline && !isTarget;
   }) || null;
 }
 
 function findTarget100Column(headers) {
   const priorities = [
     '% in IX+30', 'X Target', 'Target', 'Class X Target', 'Target %', 
-    'Target Percentage', 'IX+30', 'IX + 30', 'IX +30', 'IX+ 30'
+    'Target Percentage', 'IX+30', 'IX + 30', 'IX +30', 'IX+ 30',
+    'X TARGET %', 'X TARGET PERCENTAGE', 'Target 100', 'X 100',
+    'Projected %', 'Projected Target'
   ];
   for (const col of priorities) {
-    const found = headers.find((h) => {
+    const found = headers.find(h => {
       if (!h) return false;
-      const normalized = h.toString().trim().toLowerCase().replace(/\s+/g, ' ');
+      const normalized = String(h).trim().toLowerCase().replace(/\s+/g, ' ');
       return normalized === col.toLowerCase();
     });
     if (found) return found;
   }
+
   return headers.find(h => {
-    const lower = String(h || '').toLowerCase();
-    const hasTarget = lower.includes('target') || lower.includes('+30') || lower.includes('+ 30');
-    const isIxBaselineOnly = (lower.includes('ix') || lower.includes('9th')) && !lower.includes('+30') && !lower.includes('+ 30');
+    const lower = String(h || '').toLowerCase().replace(/\s+/g, ' ');
+    const hasTarget = lower.includes('target') || lower.includes('+30') || lower.includes('+ 30') || lower.includes('projected');
+    // Don't exclude 'ix' if it's paired with '+30' (common in target headers)
+    const isIxBaselineOnly = (lower.includes('ix') || lower.includes('9th')) && !lower.includes('+30') && !lower.includes('+ 30') && !lower.includes('target') && !lower.includes('projected');
     return hasTarget && !isIxBaselineOnly;
   }) || null;
 }
@@ -247,9 +279,17 @@ function detectHeaderRowIndex(matrix = []) {
   return bestIndex;
 }
 
-function buildHeadersFromRow(rawHeaders = []) {
+function buildHeadersFromRow(rawHeaders = [], prevRow = []) {
   return rawHeaders.map((value, index) => {
     const cellValue = String(value ?? '').trim();
+    const contextValue = String(prevRow[index] ?? '').trim();
+    
+    // If the header is just a generic symbol like '%' or 'Marks', try to prepend context from row above
+    const isGeneric = ['%', 'marks', 'total', 'grand total', 'target', '100', '80', 'percent', 'percentage'].includes(cellValue.toLowerCase());
+    if (isGeneric && contextValue && !['s.no', 'name', 'enrollment', 'admission'].includes(contextValue.toLowerCase())) {
+      return `${contextValue} ${cellValue}`;
+    }
+    
     if (cellValue) return cellValue;
     return index === 0 ? 'S.No' : `Column${index + 1}`;
   });
@@ -258,14 +298,27 @@ function buildHeadersFromRow(rawHeaders = []) {
 function detectExamStage(sheetName, headers = []) {
   const combined = `${sheetName} ${headers.join(' ')}`.toLowerCase();
   const normalizedCombined = combined.replace(/[^a-z0-9]+/g, ' ').trim();
+  
+  // Prioritize BOARD and specific exam stages over BASELINE detection
+  // This prevents a BOARD result sheet that happens to have baseline data from being misidentified
+  if (normalizedCombined.includes('cbse result') || 
+      (normalizedCombined.includes('cbse') && normalizedCombined.includes('result')) || 
+      normalizedCombined.includes('all subject wise report') ||
+      normalizedCombined.includes('board result') ||
+      normalizedCombined.includes('final result')) {
+    return 'BOARD';
+  }
+  if (/\bboard\b/.test(normalizedCombined)) return 'BOARD';
+
+  if (normalizedCombined.includes('half yearly') || normalizedCombined.includes('halfyearly') || /\bhy\b/.test(normalizedCombined)) return 'HY';
+  if (normalizedCombined.includes('preboard 2') || normalizedCombined.includes('pre board 2') || normalizedCombined.includes('preboard ii') || normalizedCombined.includes('pre board ii') || /\bpb2\b/.test(normalizedCombined)) return 'PB2';
+  if (normalizedCombined.includes('preboard 1') || normalizedCombined.includes('pre board 1') || normalizedCombined.includes('preboard i') || normalizedCombined.includes('pre board i') || /\bpb1\b/.test(normalizedCombined)) return 'PB1';
+
   const class9Col = findClass9Column(headers);
   const targetCol = findTarget100Column(headers);
   if (class9Col && targetCol) return 'BASELINE';
   if (normalizedCombined.includes('target sheet') || normalizedCombined.includes('baseline') || normalizedCombined.includes('class 9 target')) return 'BASELINE';
-  if (normalizedCombined.includes('half yearly') || normalizedCombined.includes('halfyearly') || /\bhy\b/.test(normalizedCombined)) return 'HY';
-  if (normalizedCombined.includes('preboard 1') || normalizedCombined.includes('pre board 1') || /\bpb1\b/.test(normalizedCombined)) return 'PB1';
-  if (normalizedCombined.includes('preboard 2') || normalizedCombined.includes('pre board 2') || /\bpb2\b/.test(normalizedCombined)) return 'PB2';
-  if (/\bboard\b/.test(normalizedCombined)) return 'BOARD';
+  
   return 'UNKNOWN';
 }
 
@@ -529,7 +582,7 @@ function buildClass10CumulativeSheet(sheetNames, sheets) {
 }
 
 function isMissingProjectedValue(value) {
-  return value === '' || value === null || value === undefined;
+  return value === null || value === undefined || value === '' || value === 'null' || value === 'undefined';
 }
 
 function buildCumulativeRowLookupKey(row = {}) {
@@ -644,10 +697,6 @@ function createStructuredUploadState() {
   };
 }
 
-function toSafeNumber(value) {
-  const num = parseFloat(value);
-  return Number.isFinite(num) ? num : null;
-}
 
 function normalizeStudentKey(row, headers) {
   const admissionCol = findAdmissionColumn(headers);
@@ -959,7 +1008,8 @@ function parseCSV(text) {
   };
   const matrix = lines.map(parseLine);
   const headerRowIndex = detectHeaderRowIndex(matrix);
-  const headers = buildHeadersFromRow(matrix[headerRowIndex] || []);
+  const prevRow = headerRowIndex > 0 ? matrix[headerRowIndex - 1] : [];
+  const headers = buildHeadersFromRow(matrix[headerRowIndex] || [], prevRow);
   const rows = [];
   for (let i = headerRowIndex + 1; i < matrix.length; i++) {
     const values = matrix[i];
